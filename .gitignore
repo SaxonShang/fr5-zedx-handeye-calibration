@@ -11,9 +11,5 @@ sessions/
 *.svo
 *.svo2
 
-# Diagnostic images derived from local photographs
-board_detection.png
-full_board_detection.png
-
-# Vendor reference material; use the official online datasheet
-ZED X - ZED X Mini - Datasheet.pdf
+# Local data: reference photos/datasheets, simulation runs, public datasets
+calibration-data/

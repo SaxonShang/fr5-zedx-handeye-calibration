@@ -20,6 +20,23 @@ import numpy as np
 import yaml
 
 
+def read_image(path: Path) -> np.ndarray | None:
+    """cv2.imread that also works for non-ASCII Windows paths (e.g. this repo's)."""
+    try:
+        data = np.fromfile(str(path), dtype=np.uint8)
+    except OSError:
+        return None
+    return cv2.imdecode(data, cv2.IMREAD_UNCHANGED) if data.size else None
+
+
+def write_image(path: Path, image: np.ndarray) -> bool:
+    """cv2.imwrite counterpart of read_image."""
+    ok, encoded = cv2.imencode(Path(path).suffix or ".png", image)
+    if ok:
+        Path(path).write_bytes(encoded.tobytes())
+    return bool(ok)
+
+
 def read_board(path: Path) -> dict:
     board = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(board, dict) or board.get("target_type") != "aprilgrid":
@@ -60,7 +77,8 @@ def detector():
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
     params = cv2.aruco.DetectorParameters()
     params.markerBorderBits = 2  # Kalibr kalibr_create_target_pdf default
-    params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+    # Line fits give the closest start for the cornerSubPix pass in detect_board.
+    params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_CONTOUR
     return cv2.aruco.ArucoDetector(dictionary, params)
 
 
@@ -76,11 +94,22 @@ def detect_board(image: np.ndarray, board: dict, aruco_detector) -> tuple[np.nda
         return np.empty((0, 3)), np.empty((0, 2)), []
     pairs = sorted(zip(ids.reshape(-1).tolist(), corners), key=lambda pair: pair[0])
     object_points, image_points, used_ids = [], [], []
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 0.001)
     for tag_id, detected in pairs:
         if not 0 <= tag_id < board["tagRows"] * board["tagCols"]:
             continue
+        # Kalibr's gap squares touch every tag corner, making it an X-junction.
+        # ArucoDetector's corners sit ~1-2 px off there and its own SUBPIX
+        # window (~0.3 module) cannot pull them back; rendered boards gave
+        # 1.4 px mean error without this pass and 0.03 px with it. Keep the
+        # window inside the gap square so it sees only this junction. Corners
+        # that start further off than the window stay put; fit_pose drops them.
+        quad = np.asarray(detected, dtype=np.float32).reshape(4, 1, 2)
+        edge = float(np.mean(np.linalg.norm(quad[:, 0] - np.roll(quad[:, 0], 1, axis=0), axis=1)))
+        half = int(np.clip(round(0.4 * edge * board["tagSpacing"]), 3, 10))
+        cv2.cornerSubPix(gray, quad, (half, half), (-1, -1), criteria)
         object_points.extend(tag_object_corners(tag_id, board))
-        image_points.extend(np.asarray(detected).reshape(4, 2))
+        image_points.extend(quad.reshape(4, 2))
         used_ids.append(int(tag_id))
     return np.asarray(object_points, dtype=np.float64).reshape(-1, 3), np.asarray(image_points, dtype=np.float64).reshape(-1, 2), used_ids
 
@@ -245,7 +274,7 @@ def capture(args):
             if (image.shape[1], image.shape[0]) != (session["image_width"], session["image_height"]):
                 raise RuntimeError("Image size differs from saved ZED intrinsics")
             filename = f"images/{len(session['samples']):04d}.png"
-            if not cv2.imwrite(str(output / filename), image):
+            if not write_image(output / filename, image):
                 raise RuntimeError(f"Could not write {filename}")
             session["samples"].append({
                 "image": filename,
@@ -265,7 +294,7 @@ def capture(args):
 
 def detect_command(args):
     board = read_board(args.target)
-    image = cv2.imread(str(args.image), cv2.IMREAD_UNCHANGED)
+    image = read_image(args.image)
     if image is None:
         raise FileNotFoundError(args.image)
     object_points, image_points, ids = detect_board(image, board, detector())
@@ -286,9 +315,33 @@ def detect_command(args):
                 if j == 0:
                     cv2.putText(drawing, "0", tuple(corner), cv2.FONT_HERSHEY_SIMPLEX,
                                 0.6, (255, 0, 0), 2)
-        if not cv2.imwrite(str(args.overlay), drawing):
+        if not write_image(args.overlay, drawing):
             raise RuntimeError(f"Could not write overlay {args.overlay}")
         print(f"Overlay: {args.overlay}")
+
+
+def fit_pose(obj: np.ndarray, img: np.ndarray, k: np.ndarray, distortion: np.ndarray,
+             rvec: np.ndarray, tvec: np.ndarray, min_tags: int):
+    """LM pose refinement that drops whole tags with a corner far off the fit.
+
+    Such a corner locked onto the wrong feature; a few of them can hide under
+    the view RMSE limit while still biasing the pose. Points come 4 per tag.
+    """
+    subset = np.arange(len(obj))
+    for _ in range(4):
+        rvec, tvec = cv2.solvePnPRefineLM(obj[subset], img[subset], k, distortion, rvec, tvec)
+        projected, _ = cv2.projectPoints(obj[subset], rvec, tvec, k, distortion)
+        errors = np.linalg.norm(projected.reshape(-1, 2) - img[subset], axis=1)
+        tags = subset // 4
+        bad = np.unique(tags[errors > max(1.0, 5.0 * float(np.median(errors)))])
+        if not len(bad) or len(np.unique(tags)) - len(bad) < min_tags:
+            break
+        subset = subset[~np.isin(tags, bad)]
+    else:
+        rvec, tvec = cv2.solvePnPRefineLM(obj[subset], img[subset], k, distortion, rvec, tvec)
+        projected, _ = cv2.projectPoints(obj[subset], rvec, tvec, k, distortion)
+        errors = np.linalg.norm(projected.reshape(-1, 2) - img[subset], axis=1)
+    return rvec, tvec, subset, float(np.sqrt(np.mean(errors ** 2)))
 
 
 def observations_from_session(session_dir: Path, board: dict, session: dict,
@@ -298,7 +351,7 @@ def observations_from_session(session_dir: Path, board: dict, session: dict,
     aruco_detector = detector()
     accepted, rejected = [], []
     for index, sample in enumerate(session["samples"]):
-        image = cv2.imread(str(session_dir / sample["image"]), cv2.IMREAD_UNCHANGED)
+        image = read_image(session_dir / sample["image"])
         if image is None:
             rejected.append({"index": index, "reason": "image missing"})
             continue
@@ -318,11 +371,7 @@ def observations_from_session(session_dir: Path, board: dict, session: dict,
                 obj, img, k, distortion, flags=cv2.SOLVEPNP_ITERATIVE
             )
             if ok:
-                rvec, tvec = cv2.solvePnPRefineLM(obj, img, k, distortion, rvec, tvec)
-                projected, _ = cv2.projectPoints(obj, rvec, tvec, k, distortion)
-                rmse = float(np.sqrt(np.mean(np.sum(
-                    (projected.reshape(-1, 2) - img) ** 2, axis=1
-                ))))
+                rvec, tvec, subset, rmse = fit_pose(obj, img, k, distortion, rvec, tvec, min_tags)
         except cv2.error:
             pass
         if rmse > max_pnp_rmse:
@@ -349,10 +398,12 @@ def observations_from_session(session_dir: Path, board: dict, session: dict,
             rejected.append({"index": index, "reason": f"PnP RMSE {rmse:.2f} px"})
             continue
         rot, _ = cv2.Rodrigues(rvec)
+        kept_ids = sorted({ids[i // 4] for i in subset.tolist()})
         accepted.append({
             "index": index, "base_T_flange": pose_from_fr5(sample["flange_pose_mm_deg"]),
             "camera_T_board": transform(rot, tvec), "object_points": obj[subset],
-            "image_points": img[subset], "tag_ids": ids, "pnp_rmse_px": rmse,
+            "image_points": img[subset], "tag_ids": kept_ids,
+            "dropped_tag_ids": sorted(set(ids) - set(kept_ids)), "pnp_rmse_px": rmse,
         })
     return accepted, rejected
 
@@ -518,6 +569,7 @@ def solve(args):
         "candidates": [serialise(item) for item in candidates],
         "accepted_sample_indices": [o["index"] for o in observations],
         "accepted_views": [{"index": o["index"], "tag_ids": o["tag_ids"],
+                            "dropped_tag_ids": o["dropped_tag_ids"],
                             "pnp_rmse_px": o["pnp_rmse_px"]} for o in observations],
         "holdout_sample_indices": [o["index"] for o in holdout],
         "rejected": rejected, "board": board,
