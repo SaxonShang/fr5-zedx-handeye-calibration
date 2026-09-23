@@ -1,0 +1,19 @@
+# Python environments and caches
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Local calibration sessions and camera recordings
+session_*/
+sessions/
+*.svo
+*.svo2
+
+# Diagnostic images derived from local photographs
+board_detection.png
+full_board_detection.png
+
+# Vendor reference material; use the official online datasheet
+ZED X - ZED X Mini - Datasheet.pdf
