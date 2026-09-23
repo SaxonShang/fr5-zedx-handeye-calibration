@@ -173,6 +173,12 @@ def capture(args):
     init.camera_resolution = getattr(sl.RESOLUTION, args.resolution)
     init.camera_fps = args.fps
     init.depth_mode = sl.DEPTH_MODE.NONE
+    # AUTO flip rotates images 180 deg if the IMU sees the camera upside down
+    # at open time; on a moving arm that silently changes the optical frame.
+    init.camera_image_flip = sl.FLIP_MODE.OFF
+    # Self-calibration may nudge the rectified left frame on every open; use
+    # the same fixed factory calibration here and in the runtime application.
+    init.camera_disable_self_calib = True
     if args.stream_ip:
         init.set_from_stream(args.stream_ip, args.stream_port)
     status = camera.open(init)
@@ -189,6 +195,8 @@ def capture(args):
             "camera": "ZED X rectified left optical frame",
             "camera_serial": int(info.serial_number),
             "image_view": "LEFT",
+            "zed_camera_image_flip": "OFF",
+            "zed_self_calibration": False,
             "image_width": int(resolution.width),
             "image_height": int(resolution.height),
             "K": [[float(left.fx), 0.0, float(left.cx)],
@@ -443,6 +451,10 @@ def solve(args):
     session = json.loads((session_dir / "session.json").read_text(encoding="utf-8"))
     if session.get("image_view") != "LEFT" or session.get("schema_version") != 1:
         raise ValueError("Expected a v1 session with rectified ZED left images")
+    if session.get("zed_camera_image_flip") != "OFF" or session.get("zed_self_calibration") is not False:
+        print("WARNING: session predates fixed ZED flip/self-calibration settings; "
+              "the left optical frame may not match runtime. Recapture if possible.",
+              file=sys.stderr)
     board = read_board(args.target or session_dir / "target.yaml")
     if board != session["board"]:
         print("WARNING: board YAML differs from capture metadata; check the printed target.", file=sys.stderr)
@@ -488,7 +500,7 @@ def solve(args):
                 "train": score(train, flange_t_camera, base_t_board, k, distortion),
                 "holdout": score(holdout, flange_t_camera, base_t_board, k, distortion),
             })
-        except (ImportError, RuntimeError, cv2.error) as exc:
+        except (ImportError, RuntimeError, ValueError, cv2.error) as exc:
             print(f"Pixel refinement unavailable: {exc}", file=sys.stderr)
     candidates = [item for item in candidates
                   if all(math.isfinite(value)
@@ -510,6 +522,8 @@ def solve(args):
         "holdout_sample_indices": [o["index"] for o in holdout],
         "rejected": rejected, "board": board,
         "camera_serial": session["camera_serial"], "K": session["K"],
+        "zed_camera_image_flip": session.get("zed_camera_image_flip", "unknown (AUTO)"),
+        "zed_self_calibration": session.get("zed_self_calibration", "unknown (enabled)"),
         "robot_pose_convention": session["robot_pose_convention"],
         "warning": "Verify FR5 Euler convention and physical tag size before use on the robot",
     }

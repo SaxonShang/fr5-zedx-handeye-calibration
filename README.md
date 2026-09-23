@@ -5,9 +5,10 @@
 ## 开始前
 
 1. 在能使用 ZED SDK 的 Python 环境中安装 `requirements.txt`（OpenCV 限定 4.x，因为 [5.0.0.93 的 Python 包缺失 `calibrateHandEye`](https://github.com/opencv/opencv/issues/29565)）。另外按厂商说明安装 [ZED SDK Python API](https://www.stereolabs.com/docs/app-development/python/install) 和 [FAIRINO Python SDK](https://github.com/FAIR-INNOVATION/fairino-python-sdk)。确认 Python 版本受本机 ZED SDK 支持。
-2. [target.example.yaml](target.example.yaml) 根据照片文字填写了 6×6、tagSize `0.055 m`、tagSpacing `0.3`（间隔 `0.0165 m`）。这是**名义尺寸**；收到实际 YAML 后改用它，并测量打印后实体 tag 边长。`tagSpacing` 是间隔与边长之比，不是米。
-3. ZED X 是 GMSL2 相机，直接采集需 Jetson + ZED Link/ZED Box；Windows 端可用 [ZED SDK 流接收](https://docs.stereolabs.com/docs/products/cameras/zedx/development-on-pc)，但 Jetson 端需先运行 [官方发送程序](https://github.com/stereolabs/zed-sdk/blob/master/camera%20streaming/single_sender/python/streaming_sender.py)。`--stream-ip` 接收流；不填则打开本机直连相机。
-4. 将标定板牢固固定。采集时手动移动机器人，脚本不会发运动指令。建议采集 20–30 个姿态，改变绕至少两个不同轴的转角，并让标定板覆盖图像不同区域。每次按 Enter 前等待机械臂稳定；脚本会比较抓图前后的法兰位姿，运动超限即丢弃该帧。
+2. [target.example.yaml](target.example.yaml) 根据照片文字填写了 6×6、tagSize `0.055 m`、tagSpacing `0.3`（间隔 `0.0165 m`）。这是**名义尺寸**；收到实际 YAML 后改用它，并用卡尺测量实体板：tag 0 左边缘到 tag 5 右边缘名义为 **412.5 mm**（6×55 + 5×16.5）。打印比例偏 1%，在 0.5 m 距离下手眼平移约偏 5 mm。`tagSpacing` 是间隔与边长之比，不是米。
+3. ZED X 是 GMSL2 相机，直接采集需 Jetson + ZED Link/ZED Box；Windows 端可用 [ZED SDK 流接收](https://docs.stereolabs.com/docs/products/cameras/zedx/development-on-pc)，但 Jetson 端需先运行 [官方发送程序](https://github.com/stereolabs/zed-sdk/blob/master/camera%20streaming/single_sender/python/streaming_sender.py)。发送程序在 `init = sl.InitParameters()` 之后要加上 `init.camera_image_flip = sl.FLIP_MODE.OFF` 和 `init.camera_disable_self_calib = True`，与本脚本一致。`--stream-ip` 接收流；不填则打开本机直连相机。
+4. 相机为 **ZED X 2.2 mm**（视场 110°×80°，名义 fx ≈ 2.2 mm / 3 µm ≈ 733 px，基线 120 mm，239 g）。用背面 4×M4（螺纹深度 ≤5 mm）或底部 2×M3 加 1/4"-20（≤6.4 mm）固定到法兰支架，不要只靠一颗 1/4" 螺钉：机械臂加减速可能让相机转动，标定随即失效。相机加支架远低于 FR5 的 5 kg 负载。
+5. 将标定板牢固固定。采集时手动移动机器人，脚本不会发运动指令。2.2 mm 是广角镜头，相机到板保持 **0.35–0.7 m**：0.4 m 时板约占图像高度 63%，1.0 m 时每个码元只剩约 4 px，检测和姿态精度明显下降。FR5 工作半径 922 mm，板要放在机器人能在该距离环绕观察的位置。建议采集 20–30 个姿态，改变绕至少两个不同轴的转角（各 20–40°），并让标定板覆盖图像不同区域。每次按 Enter 前等待机械臂稳定；脚本会比较抓图前后的法兰位姿，运动超限即丢弃该帧。
 
 ## 使用
 
@@ -31,7 +32,9 @@ python handeye.py capture --robot-ip 192.168.58.2 --target target.example.yaml -
 python handeye.py capture --robot-ip 192.168.58.2 --stream-ip 192.168.1.10 --target target.example.yaml --output session_001
 ```
 
-`192.168.58.2` 只是法奥文档中的示例地址，运行时替换为控制器实际 IP；流地址替换为 Jetson 的 IP。`--output` 必须是尚不存在的目录。程序保存 `session.json`、`target.yaml` 和 `images/*.png`。ZED SDK 启动时可能更新自标定内参，因此每个 session 都保存当次左目内参。`VIEW.LEFT` 是已校正图，脚本只配合 `calibration_parameters.left_cam` 使用，不依赖深度图或名义 2.2 mm 焦距。
+`192.168.58.2` 只是法奥文档中的示例地址，运行时替换为控制器实际 IP；流地址替换为 Jetson 的 IP。`--output` 必须是尚不存在的目录。程序保存 `session.json`、`target.yaml` 和 `images/*.png`，每个 session 保存当次左目内参。分辨率用默认 `HD1200`：`HD1080` 是裁切模式（纵向视场变小），`SVGA` 是合并模式。`VIEW.LEFT` 是已校正图，脚本只配合 `calibration_parameters.left_cam` 使用，不依赖深度图或名义 2.2 mm 焦距。
+
+脚本以 `FLIP_MODE.OFF` 打开相机并关闭 SDK 自标定，两项都记入 `session.json` 和 `result.json`。SDK 默认 `FLIP_MODE.AUTO`：打开时 IMU 判断相机倒置就把图像转 180°，装在机械臂上时这取决于开机姿态。**使用标定结果的程序必须同样设置这两项**，否则左目坐标系可能转 180° 或有细微偏差。旧 session 缺少这两项时，`solve` 会给出警告。
 
 求解：
 
@@ -50,5 +53,6 @@ python -m unittest discover -s tests -v
 ## 坐标和可靠性核对
 
 - [FAIRINO 手册](https://fairino-doc-en.readthedocs.io/latest/CobotsManual/robot_brief_introduction.html)给出移动轴 ZYX 姿态顺序；脚本以等价的固定轴 XYZ 计算 `Rz(rz) @ Ry(ry) @ Rx(rx)`，把 SDK 的毫米和度转换成米和弧度，同时保存六元组原值。[法兰位姿接口](https://fairino-doc-en.readthedocs.io/latest/SDKManual/PythonRobotStatusInquiry.html)为 `GetActualToolFlangePose(0)`。
-- [Kalibr 板生成器](https://github.com/ethz-asl/kalibr/blob/master/aslam_offline_calibration/kalibr/python/kalibr_create_target_pdf)使用 AprilTag 36h11、2 码元黑边和 180° 旋转的码图；[Kalibr 坐标源码](https://github.com/ethz-asl/kalibr/blob/master/aslam_cv/aslam_cameras_april/src/GridCalibrationTargetAprilgrid.cpp)定义板原点和角点顺序。脚本已按收到的实体照片验证 ID 0、6 和 OpenCV 的角点 0 方向。
-- 求解精度仍需真机核对：确认板的实体尺寸、法兰位姿参考系、相机是否牢固，以及留出姿态的板位置/角度一致性。最终机械臂任务精度还受机器人重复定位和工具安装影响。
+- [Kalibr 板生成器](https://github.com/ethz-asl/kalibr/blob/master/aslam_offline_calibration/kalibr/python/kalibr_create_target_pdf)使用 AprilTag 36h11、2 码元黑边和 180° 旋转的码图；[Kalibr 坐标源码](https://github.com/ethz-asl/kalibr/blob/master/aslam_cv/aslam_cameras_april/src/GridCalibrationTargetAprilgrid.cpp)定义板原点和角点顺序。脚本已按收到的整板照片验证 ID 0–35 和 OpenCV 的角点 0 方向。
+- 结果合理性：ZED X 基线 120 mm，相机外壳横向中心位于左目光学坐标 +x 约 60 mm 处。用支架 CAD 估算 `flange_T_left_camera` 的平移，与结果相差超过 5–10 mm 时先排查板尺寸、相机固定和位姿约定。
+- 求解精度仍需真机核对：确认板的实体尺寸、法兰位姿参考系、相机是否牢固，以及留出姿态的板位置/角度一致性。FR5 重复定位精度为 ±0.02 mm，但手眼求解依赖控制器报告的绝对位姿，留出姿态的板位置误差也包含机器人绝对精度的影响。最终机械臂任务精度还受工具安装影响。

@@ -31,12 +31,14 @@ class HandeyeSyntheticTest(unittest.TestCase):
         rng = np.random.default_rng(18)
         board = read_board(Path(__file__).resolve().parents[1] / "target.example.yaml")
         objects = np.concatenate([tag_object_corners(i, board) for i in range(36)])
-        k = np.array([[1200, 0, 960], [0, 1200, 600], [0, 0, 1]], dtype=float)
+        # ZED X 2.2 mm at HD1200: nominal fx = 2.2 mm / 3 um pixel ~ 733 px.
+        k = np.array([[733, 0, 960], [0, 733, 600], [0, 0, 1]], dtype=float)
         distortion = np.zeros(5)
         truth_flange_t_camera = parameters_to_matrix(np.array([0.14, -0.08, 0.11,
                                                                 0.045, -0.025, 0.085]))
+        # Board about 0.5 m in front of the camera, inside the 0.35-0.7 m range.
         truth_base_t_board = parameters_to_matrix(np.array([0.02, -0.03, 0.04,
-                                                            -0.20, -0.20, 0.95]))
+                                                            -0.20, -0.20, 0.60]))
         observations = []
         for i in range(25):
             robot = parameters_to_matrix(np.r_[rng.uniform(-0.35, 0.35, 3),
@@ -46,14 +48,19 @@ class HandeyeSyntheticTest(unittest.TestCase):
             pixels, _ = cv2.projectPoints(objects, rvec, camera_t_board[:3, 3],
                                           k, distortion)
             pixels = pixels.reshape(-1, 2) + rng.normal(0, 0.12, (len(objects), 2))
+            # Like the detector, keep only tags wholly inside the 1920x1200 image.
+            inside = np.all((pixels >= 0) & (pixels < [1920, 1200]), axis=1)
+            visible = np.repeat(inside.reshape(-1, 4).all(axis=1), 4)
+            self.assertGreaterEqual(visible.sum(), 4 * 4)
+            view_objects, pixels = objects[visible], pixels[visible]
             ok, observed_rvec, observed_tvec = cv2.solvePnP(
-                objects, pixels, k, distortion, flags=cv2.SOLVEPNP_ITERATIVE
+                view_objects, pixels, k, distortion, flags=cv2.SOLVEPNP_ITERATIVE
             )
             self.assertTrue(ok)
             observed_rot, _ = cv2.Rodrigues(observed_rvec)
             observations.append({"index": i, "base_T_flange": robot,
                                  "camera_T_board": transform(observed_rot, observed_tvec),
-                                 "object_points": objects, "image_points": pixels})
+                                 "object_points": view_objects, "image_points": pixels})
         train, holdout = observations[:20], observations[20:]
         check_motion_diversity(train)
         estimated = handeye(train, cv2.CALIB_HAND_EYE_PARK)
