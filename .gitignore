@@ -11,7 +11,7 @@ sessions/
 *.svo
 *.svo2
 
-# Local data: reference photos/datasheets, simulation runs, public datasets
+# Local data: calibration sessions, simulation runs, reference documents, archived code
 calibration-data/
 
 # Local agent instructions
