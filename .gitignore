@@ -13,3 +13,6 @@ sessions/
 
 # Local data: reference photos/datasheets, simulation runs, public datasets
 calibration-data/
+
+# Local agent instructions
+AGENTS.md
