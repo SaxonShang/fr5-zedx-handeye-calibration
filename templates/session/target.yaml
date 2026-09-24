@@ -1,6 +1,6 @@
 # Kalibr Aprilgrid 标定板（A500，6x6，照片文字 "size=5.5cm and spacing=1.65cm"）。
-# 这是名义尺寸：请用卡尺测量实体板，tag 0 左边缘到 tag 5 右边缘应为 412.5 mm
-# （6 x 55 + 5 x 16.5，不含外侧小方块）。实测不同就按比例修改 tagSize。
+# 用户已确认理论尺寸准确：tag 阵列外缘为 412.5 mm。
+# （6 x 55 + 5 x 16.5，不含外侧小方块）。主求解固定这些值，尺度诊断不修改它们。
 target_type: aprilgrid
 tagCols: 6
 tagRows: 6

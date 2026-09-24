@@ -25,8 +25,8 @@ python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
 
 | 文件 | 填什么 | 最快的办法 |
 |---|---|---|
-| `camera.yaml` | 校正后左目内参 | 在 ZED Box 上运行 `python3 tools/zed_camera_yaml.py > camera.yaml`，再拷过来覆盖 |
-| `target.yaml` | 标定板尺寸 | 默认是 6×6、55 mm；用卡尺实测后再确认 |
+| `camera.yaml` | 校正后左目内参 | 在 ZED Box 上运行 `python3 tools/zed_camera_yaml.py --output camera.yaml`，再拷过来覆盖 |
+| `target.yaml` | 标定板尺寸 | 使用已确认准确的 6×6、55 mm、间隙 16.5 mm |
 | `images/` | 每个机位一张图 | 从 Box 拷过来 |
 | `poses.csv` | 每张图一行：法兰位姿 + 6 个关节角 | 照抄 FR5 WebApp 的显示值 |
 
@@ -36,7 +36,7 @@ python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python -m handeye check-poses --poses calibration-data/sessions/s001/poses.csv
 ```
 
-**4. 标定**。`--expected-translation-mm` 填按支架 CAD 估出的平移（mm），用于核对结果：
+**4. 标定**。`--expected-translation-mm` 是事先粗估的"左目光心在法兰坐标系中的位置"（mm），只用来核对结果，估法见 [2.1](#21-session-文件夹与配置文件) 末尾。下面的 `60 -75 45` 只是示例，要换成自己的估计值：
 
 ```bash
 .venv/bin/python -m handeye solve --session calibration-data/sessions/s001 --expected-translation-mm 60 -75 45
@@ -128,7 +128,7 @@ FR5 末端法兰
 - ⚠️ **支架刚性**：相机尽量靠近法兰、直接固定，Box 的 600 g 不要经过相机的安装件传递。支架随姿态变化的变形无法被标定消除。
 - **线缆**：电源线在支架上固定好，给 J4–J6 留足旋转余量，不能拉扯末端。
 - **负载**：末端总重约 1.1–1.3 kg，远低于 5 kg，但要在控制器里设置负载质量和质心。
-- **标定板**：牢固固定，并用卡尺实测尺寸（见 [2.1](#21-session-文件夹与配置文件)）。
+- **标定板**：按已确认准确的理论尺寸使用，牢固固定并保持平整（见 [2.1](#21-session-文件夹与配置文件)）。
 
 ### 1.4 软件环境
 
@@ -148,7 +148,7 @@ python3 -m venv .venv
 
 Windows 用 `python -m venv .venv` 和 `.venv\Scripts\python.exe -m pip install -r requirements.txt`。依赖为 numpy、OpenCV contrib 4.x、SciPy、PyYAML。OpenCV 限定 4.x，因为 [5.0.0.93 的 Python 包缺失 `calibrateHandEye`](https://github.com/opencv/opencv/issues/29565)。仓库放在中文路径下也能正常读写图像。
 
-测试过的环境（都在 Windows 上，35 个测试全部通过）：
+此前测试过的依赖组合（Windows；本轮测试数量见开发说明）：
 
 | Python | opencv-contrib-python | numpy | scipy | PyYAML |
 |---|---|---|---|---|
@@ -161,7 +161,7 @@ Windows 用 `python -m venv .venv` 和 `.venv\Scripts\python.exe -m pip install 
 .venv/bin/python -B -m unittest discover -s tests
 ```
 
-**ZED Box**：Jetson 上已装好 ZED SDK 和 `pyzed`，只需把 `tools/zed_camera_yaml.py` 拷过去运行，用来导出内参（这个脚本没有在真机上测试过，第一次使用时请和 ZED Explorer 显示的值核对一下）。
+**ZED Box**：需要 ZED SDK、`pyzed` 和 PyYAML（`python3 -m pip install PyYAML`）；只需把 `tools/zed_camera_yaml.py` 拷过去运行，用来导出内参（尚未在真机测试；须与保存图像的采集程序使用相同配置和校正后左目内参，不能直接与 Explorer 的 raw 内参混用）。
 
 ## 2. 标定算法
 
@@ -188,9 +188,13 @@ cy: 599.5
 distortion: [0.0, 0.0, 0.0, 0.0, 0.0]   # 校正图为 0
 ```
 
-数值来自 SDK 的 `calibration_parameters.left_cam`，`tools/zed_camera_yaml.py` 会直接输出这份文件。**不要用 `SN*.conf` 里的数值**，那是未校正图像的内参。
+数值来自 SDK 的 `calibration_parameters.left_cam`。`tools/zed_camera_yaml.py --output camera.yaml` 直接写入文件，避免 SDK 的终端日志混入 YAML，同时记录实际分辨率、帧率、序列号和 SDK 版本。**不要用 `SN*.conf` 或 Explorer 的 raw 内参代替**，它们对应未校正图像。
 
-**target.yaml**：默认的 6×6、`tagSize: 0.055`、`tagSpacing: 0.3`（间隙与边长之比，不是米）是照片上印的名义尺寸。用卡尺量 tag 0 左边缘到 tag 5 右边缘，应为 **412.5 mm**；实测不同时按比例修改 `tagSize`。
+导出工具会单独打开相机，默认关闭启动自标定。图像采集与实际使用必须采用同一相机、SDK、分辨率、翻转和自标定设置；如果开启启动自标定，必须从**保存图像的同一个相机实例**导出 K，不能拿另一次启动生成的 YAML 为已有图像作保证。仅有元数据相同也不能证明 K 与图像来自同次标定。
+
+显式 `image_flip: ON/AUTO`、非 `LEFT` 或未校正图像声明会被拒绝。旧文件缺少这些字段仍可读取，缺失不代表相机设置已核验。
+
+**target.yaml**：按你确认的准确理论值固定为 6×6、`tagSize: 0.055`、`tagSpacing: 0.3`（间隙与边长之比，不是米），间隙 16.5 mm，tag 阵列外缘 **412.5 mm**。主求解不估计或修改板尺寸；尺度诊断只检查图像、内参与机械臂数据是否和这组准确尺寸一致。
 
 **poses.csv**：以 `#` 开头的行是注释。
 
@@ -204,6 +208,14 @@ images/0001.png,512.340,-35.120,610.450,-176.320,8.140,31.500,-12.300,-85.400,92
 - 报错信息会指明是哪一行出了问题。
 
 **touch_points.csv**：可选，见 [4.5](#45-重复性与独立验证)。
+
+**支架估计**（`solve --expected-translation-mm X Y Z`）：手眼结果 `flange_T_left_camera` 的平移，就是**左目光心在法兰坐标系中的坐标**。事先用支架 CAD 或尺子粗估这三个数；算出的平移与估计值相差超过 `--expected-tolerance-mm`（默认 10 mm）时，结果判为 `rejected`。它不参与求解，只用来发现整体性错误（例如位姿读成了 TCP、坐标轴或符号弄错）；不给出时只发警告。
+
+- **法兰坐标系**：原点在法兰端面中心，+Z 通常垂直于端面朝外。三个轴的方向在 WebApp 里确认：选工具坐标系 0，用"工具坐标"模式分别点动 +X、+Y、+Z，看法兰往哪边走。
+- **左目光心**：从相机背后、顺着镜头朝向看，是左边那个镜头的中心，离外壳横向中心 60 mm（基线 120 mm）；深度取镜头前表面往里几毫米即可。
+- **三个数**：从法兰中心出发，沿法兰的 X、Y、Z 轴分别量到左目光心的距离，带正负号。只看光心位置，与相机朝向无关。误差在 ±5 mm 内就够用；估得更粗时，可以把 `--expected-tolerance-mm` 调大。
+- **例子**：左目光心在法兰 +X 方向 60 mm、−Y 方向 75 mm，并且在法兰端面外侧 45 mm，就填 `--expected-translation-mm 60 -75 45`。
+- **只因这一项被拒绝时**：把屏幕上打印的 `flange_T_left_camera translation [...]` 与估计值逐轴对比。如果只有某一轴的正负号相反，多半是估计时把轴的方向弄反了。
 
 ### 2.2 采集姿态建议
 
@@ -227,7 +239,7 @@ X = flange_T_left_camera（要求的手眼结果）   Y = base_T_board（标定�
 3. **候选解**：
    - Park、Daniilidis：相对运动形式 AX = XB 的闭式解；
    - 以 Park 为初值，对 X 和 Y 联合最小化全部角点的重投影误差（Huber 损失，机械臂位姿视为准确）。
-4. **选方法**：每 5 个可用视图取 1 个作为**测试视图**，只用于报告和判定；在其余训练视图上做 4 折交叉验证，选交叉验证误差最小的方法，再用全部训练视图拟合。
+4. **选方法**：每 5 个可用视图取 1 个作为**测试视图**，只用于报告和判定；在其余训练视图上做 4 折交叉验证，选交叉验证误差最小的方法，再用全部训练视图拟合。候选资格只看训练集和 CV；选定方法的测试结果无效时直接拒绝，不按测试成绩换方法。
 5. **质量门限与诊断**：见 [第 4 节](#4-结果评估与诊断)。
 
 ### 2.4 命令一览
@@ -239,7 +251,7 @@ X = flange_T_left_camera（要求的手眼结果）   Y = base_T_board（标定�
 | `check-poses --poses CSV` | 用 FR5 运动学核对位姿表：欧拉角约定是否为 `Rz·Ry·Rx`、有没有与关节角不一致的行、读数时是否激活了 TCP 或工件坐标系 |
 | `solve --session DIR [选项]` | 标定，写出 `result.json` |
 | `compare --results A.json B.json [...]` | 比较同一安装状态下多次独立标定的结果 |
-| `validate --result JSON --points CSV` | 用尖端点做独立验证 |
+| `validate --result JSON --points CSV [--session NEW_DIR]` | 用尖端点做独立验证 |
 
 `solve` 的常用选项：
 - 核对与判定：`--expected-translation-mm X Y Z`、`--expected-tolerance-mm`（默认 10），以及 [4.3](#43-质量门限) 里的各项门限。
@@ -287,15 +299,15 @@ X = flange_T_left_camera（要求的手眼结果）   Y = base_T_board（标定�
 | 位姿噪声 0.5 mm / 0.05° | 量化 | accepted | 0.28 mm / 0.053° | 0.40 mm | 是 | — |
 | 关节零位系统误差 0.02° | 量化 | accepted | 0.12 mm / 0.061° | 0.14 mm | 是 | — |
 | JPEG q70（有损视频的替代） | 量化 | accepted | 0.004 mm / 0.000° | 0.005 mm | 是 | — |
-| 测试视图中 2 个位姿有误 | 量化 | rejected | 0.003 mm / 0.000° | 0.005 mm | 是 | R |
+| 测试视图中 2 个位姿有误 | 检查 | rejected | 0.003 mm / 0.000° | 0.005 mm | 是 | R |
 | 噪声 + 板 1% + 内参误差 | 量化 | accepted | 2.4 mm / 0.30° | 0.79 mm | 否 | S K |
 
 从这张表可以看出：
-- 检查场景 12/12 符合预期。
+- 检查场景 13/13 符合预期（含测试视图异常拒绝检查）。
 - 结果有错时，除了"图像转 180°"，其余都会被拒绝或给出警告；正常数据（包括带位姿噪声的）不产生诊断警告。
 - jackknife sd 与真实误差在同一量级，但它**反映不了**板尺寸、内参这类所有视图共有的误差。
 
-仿真的局限：渲染与检测共用同一板定义；内参为名义值；FR5 只用名义运动学，未检查碰撞；有损视频只用 JPEG 近似。所以仿真能说明算法和检查逻辑是对的，**不能说明真机能达到的精度**。
+仿真的局限：渲染与检测共用同一板定义；内参为名义值；FR5 只用名义运动学，未检查碰撞；有损视频只用 JPEG 近似。因此仿真只验证所覆盖场景的实现和检查逻辑，**不能证明整体正确性或真机精度**。
 
 ## 4. 结果评估与诊断
 
@@ -320,7 +332,7 @@ WARNING: the board covered only 40% of the image over all views; move it towards
 - **CV**：交叉验证的角点误差，用来选方法。
 - **test**：测试视图上的角点误差，以及把每个视图算出的板位姿放在一起时的离散程度（板是固定的，理想情况为 0）。
 - **jackknife sd**：结果的随机不确定度。
-- **board scale**：结合机械臂数据拟合出的板尺度，接近 1 为正常。
+- **board scale**：相对于固定准确板尺寸的模型一致性诊断，接近 1 为正常；未收敛时只显示状态和警告。
 - **intrinsics from the images**：只用图像重新估计的内参和残余畸变与 `camera.yaml` 的差，接近 0 为正常。
 
 ### 4.2 状态与退出码
@@ -344,7 +356,7 @@ WARNING: the board covered only 40% of the image over all views; move it towards
 | 固定板位置一致性（测试视图） | `--max-board-mm` | 3.0 mm |
 | 固定板角度一致性（测试视图） | `--max-board-deg` | 0.5° |
 | 与支架 CAD 的平移偏差 | `--expected-translation-mm`、`--expected-tolerance-mm` | 容差 10 mm；不给出时只警告 |
-| 位姿读成 TCP（需要关节角） | `--allow-tcp-offset` 放行 | 法兰偏移 > 5 mm 或 > 0.5° 即拒绝 |
+| 位姿读成 TCP（需要关节角） | `--allow-tcp-offset` 明确允许 TCP 输出 | 法兰偏移 > 5 mm 或 > 0.5° 即拒绝 |
 
 ### 4.4 诊断与处理
 
@@ -352,22 +364,22 @@ WARNING: the board covered only 40% of the image over all views; move it towards
 
 | 警告 | 含义 | 处理 |
 |---|---|---|
-| `board scale fits …x target.yaml` | 结合机械臂数据拟合出的板尺度偏离超过 0.3% | 用卡尺重新测量，修改 `target.yaml` 后重新求解；机械臂位姿误差很大时也可能触发 |
+| `board scale consistency fit is …x target.yaml` | 准确板尺寸与当前模型的尺度一致性偏差超过 0.3% | 检查内参、机械臂位姿、图像与位姿配对；保持准确板尺寸不变。诊断不收敛时显示 inconclusive/failed，不报告可信尺度 |
 | `focal length from the images …` 或 `principal point from the images …` | 仅用图像估计的焦距偏离超过 0.3%，或主点偏离超过 3 px（且超过 3 倍标准差） | 核对 `camera.yaml` 是否为校正后左目、分辨率是否一致 |
 | `residual radial distortion in the images …` | 图像里还有畸变，角落偏移超过 1 px | 确认存的是校正后的左目图，而不是原始图 |
 | `poses.csv row N: pose disagrees with its joints` | 这一行的位姿与关节角对不上 | 检查抄写，以及位姿和关节角是否在同一时刻读取 |
-| `poses look like they are in a user/work frame` | 读数时激活了工件坐标系 | 手眼结果不受影响；但 `base_T_board` 和尖端点都在那个坐标系下 |
+| `poses look like they are in a user/work frame` | 读数时激活了工件坐标系 | 手眼结果仍相对法兰；板位姿改为 `pose_reference_T_board`，不再导出 `base_T_board`，不能直接与基坐标系触点比较 |
 | `poses.csv has no joint angles` | 没有关节角，无法做以上两项检查 | 补上关节角，或至少给出 `--expected-translation-mm` |
 | `… differs from … by … mm` | 不同方法的结果相差较大 | 增加姿态、加大旋转幅度，检查位姿数据 |
 | `board covered only …%`、`board tilt only …`、`largest robot rotation …` | 姿态覆盖不足 | 按 [2.2](#22-采集姿态建议) 补拍 |
 | 某个视图出现在 `rejected_views` 里 | 该图检测失败或 PnP 误差大 | 看给出的原因：tag 太少、太远、模糊或过曝 |
 
-如果拒绝原因是 `poses look like an active TCP`，说明读数时 WebApp 激活了工具坐标系，结果会是相机相对那个 TCP 的位姿，而不是相对法兰（仿真中差了整整 120 mm）。处理办法：把工具坐标系设为 0 后重新读取位姿。
+如果拒绝原因是 `poses look like an active TCP`，说明读数时 WebApp 激活了工具坐标系，结果会是相机相对那个 TCP 的位姿，而不是相对法兰（仿真中差了整整 120 mm）。处理办法：把工具坐标系设为 0 后重新读取位姿。若明确使用 `--allow-tcp-offset`，输出 `pose_moving_T_left_camera` 和 `frames.pose_moving=reported_tcp`，不提供法兰别名，也不能直接做法兰 CAD 核对、重复性比较或基坐标系验收。名义运动学拟合的偏移不作为真实坐标转换。
 
 这些诊断的原理：
 
 - **内参与残余畸变只看图像**：每张图的板位姿各自自由，只用图像重新估计 fx、fy、cx、cy 和径向畸变 k1（相当于一次普通的相机标定），再与 `camera.yaml` 比较。因为完全不用机械臂位姿，所以机械臂误差漏不进来。最初的做法是和机械臂数据联合拟合，结果 0.5 mm 的位姿噪声被当成了 2.7 px 的畸变，因此改成了现在的方式。这项检查看不出板尺寸，并且假设标定板是平的。
-- **板尺度要结合机械臂**：机械臂的平移是公制的，板尺寸不对就会与之矛盾，所以放开板尺度拟合就能估出来。仿真中 1% 的误差能被精确还原，0.2–0.5 mm 的位姿噪声只让估计偏移不到 0.1%。
+- **尺度一致性检查要结合机械臂**：单独放开尺度进行诊断拟合，结果不反馈给主求解。已知板尺寸准确时，偏离 1 说明当前内参、位姿或数据配对等模型存在不一致；仅靠这个值不能确定原因。仿真中的板尺度误差是故障注入，不改变实体板的准确尺寸假设。
 - **位姿坐标系**：把 FK(关节角) 与记录的位姿对齐，所需的常量偏移在法兰端就是 TCP，在基座端就是工件坐标系。FR5 的 DH 法兰就是控制器的法兰，所以正常情况下这两个偏移都接近 0。
 - **jackknife 不确定度**：对训练视图反复抽取 80% 的子集重新求解，由结果的离散程度估计误差，其中包含机械臂位姿噪声的影响。雅可比协方差只计入像素噪声，仿真中低估约 10 倍，所以不用它。
 
@@ -383,22 +395,30 @@ WARNING: the board covered only 40% of the image over all views; move it towards
 - 差异超过 2 mm / 0.2°，或超过随机误差尺度的 3 倍时，判为 `DIFFERENT`，退出码 2。这说明两次之间有东西变了：支架松动、热状态不同、位姿坐标系不同等。
 - 一致也**不能**排除两次共有的误差，比如板尺寸、内参、图像翻转。
 
-**独立验证**（需要尖端工具）：给机械臂装一个已知 TCP 的尖端工具，点标定板上几个 tag 的角，把尖端在基坐标系下的坐标填进 `touch_points.csv`（至少 3 个不共线的点，推荐四个外角 0 BL、5 BR、30 TL、35 TR 再加几个内部角），然后运行：
+**板位姿检查**（需要尖端工具）：用已知 TCP 的尖端工具，测量板角点在机械臂基坐标系中的位置，填写 `touch_points.csv`。至少 3 个不同且不共线的角点，推荐 0 BL、5 BR、30 TL、35 TR 加内部角。程序拒绝重复、非有限和近共线数据；第二方向的 RMS 展布需至少 10 mm，这是项目默认值。
 
 ```bash
-.venv/bin/python -m handeye validate --result calibration-data/sessions/s001/result.json --points calibration-data/sessions/s001/touch_points.csv
+.venv/bin/python -B -m handeye validate --result calibration-data/sessions/s001/result.json --points calibration-data/sessions/s001/touch_points.csv
 ```
 
-输出包括：
-- 每个点的"实测 − 预测"距离和 RMS（默认超过 3 mm 返回退出码 2）；
-- 由这些点拟合出的板位姿与标定结果之差；
-- 点与板模型的拟合残差，反映尖端工具本身的误差。
+输出 `scope=board_pose_check`。它比较保存的 **Y（板位姿）** 与实测触点，报告每点误差、RMS、板位姿差和触点拟合残差。**单凭这项通过，不能认定 X（手眼变换）正确。**
 
-这一步检验的是整条链路：手眼结果、机械臂精度、板尺寸，而这些点从没参与过标定。
+**独立手眼链检查**：保持支架和板的位置不变，另外采集一个未用于拟合的 session（例如 `validation01`），使用同一相机配置及准确板定义，仍记录工具 0、工件坐标系 0 的法兰位姿。至少 3 个可用视图，旋转需覆盖两个不同的轴；建议多采几个分散姿态。运行：
+
+```bash
+.venv/bin/python -B -m handeye validate --result calibration-data/sessions/s001/result.json --points calibration-data/sessions/s001/touch_points.csv --session calibration-data/sessions/validation01 --output calibration-data/sessions/validation01/validation.json
+```
+
+输出 `scope=handeye_chain_check`。每个新视图使用 `base_T_flange · 已有X · camera_T_board` 预测板角点，再与触点比较；不使用保存的 Y，也不重新拟合 X。总 RMS 或最差视图 RMS 超过 `--max-rms-mm`（默认 3 mm）时退出码为 2。
+
+- `validate` 和 `compare` 只接受当前格式且 `accepted` 的结果。旧结果缺少 `frames` 时，重新运行 `solve`。
+- `compare` 至少需要两个不同文件、不同来源 session；不能把同一份结果换名字当作重复标定。原图存在时会检查是否复用像素；原图缺失时明确提示独立性仅依赖记录的路径。
+- 独立链检查要求原标定图像仍可读取，并比较解码图像哈希以排除原图复制；不要删除原 session 的图像。路径迁移后需更新数据位置并重新 `solve`。
+- 尖端 TCP 自身误差、机械臂误差会进入结果；共享的图像翻转、内参或坐标系声明错误仍可能相互抵消。通过这些检查不能代替最终任务测试。
 
 ### 4.6 精度预期
 
-输入全部准确时，仿真误差为 0.003 mm，说明算法本身没有偏差。实际精度取决于输入：
+当前合成模型与固定随机种子下，输入准确时误差约为 0.003 mm。这验证了这些场景中的数值实现，不能证明算法普遍无偏。实际精度取决于输入：
 
 | 输入误差（仿真，25 个姿态） | 对结果的影响 | 能否发现 |
 |---|---|---|
@@ -412,19 +432,21 @@ WARNING: the board covered only 40% of the image over all views; move it towards
 | 欧拉角约定错误 | 数百毫米 | 能：被拒绝 |
 | 图像转 180° | 180° | **不能**，只能靠 `FLIP_MODE.OFF` 预防 |
 
-在内参、板尺寸和相机设置都核实过的前提下，精度上限由 FR5 报告位姿的**绝对精度**决定。法奥只公布了重复定位精度，没有公布绝对精度，预计能达到亚毫米到 1–2 mm、约 0.05–0.1°。**实际能达到多少只能用 `validate` 或任务层面的测试确认。**
+实际精度还取决于 FR5 位姿的**绝对精度**、内参、图像质量、安装刚性和数据配对。重复定位精度不能代替绝对精度，目前没有真机数据可支持亚毫米等精度承诺。**应使用独立 session 的 `validate --session` 和任务层面的测试确定可用精度。**
 
 ### 4.7 `result.json` 主要字段
 
 | 字段 | 内容 |
 |---|---|
 | `status`、`reasons`、`warnings` | 判定、拒绝原因、警告 |
-| `chosen.flange_T_left_camera` | 手眼结果：4×4 矩阵，把左目光学坐标（x 右、y 下、z 沿光轴向前）变换到法兰坐标，平移单位米 |
+| `schema_version`、`frames` | 结果格式版本 2，以及位姿的移动端、参考端和相机坐标系声明；无关节角时无法交叉核对声明 |
+| `chosen.pose_moving_T_left_camera`、`chosen.pose_reference_T_board` | 始终存在的变换；含义以 `frames` 为准 |
+| `chosen.flange_T_left_camera` | 仅移动端为 flange 时输出。手眼结果：4×4 矩阵，把左目光学坐标（x 右、y 下、z 沿光轴向前）变换到法兰坐标，平移单位米 |
 | `chosen.left_camera_T_flange` | 上面的逆矩阵 |
-| `chosen.base_T_board` | 标定板在基坐标系中的位姿 |
+| `chosen.base_T_board` | 仅参考系为 base 时输出；检测到工件坐标系时不提供此别名 |
 | `uncertainty` | jackknife 的平移标准差（mm）和旋转标准差（°） |
 | `intrinsics_check` | 仅用图像估计的 fx、fy、cx、cy、k1 及其与 `camera.yaml` 的差和标准差 |
-| `board_scale_check` | 结合机械臂数据拟合出的板尺度 |
+| `board_scale_check` | 固定准确板尺寸下的模型一致性诊断，含收敛 status；失败时不输出尺度估计 |
 | `pose_joint_consistency` | 逐行位姿与关节角的一致性、可疑行，以及拟合出的 TCP / 工件坐标系偏移 |
 | `data_coverage` | 图像覆盖率、距离、倾角、最大转角 |
 | `test_views`、`candidates`、`selection` | 每个测试视图的误差，各方法的交叉验证 / 训练 / 测试误差，选择规则 |
@@ -436,13 +458,13 @@ WARNING: the board covered only 40% of the image over all views; move it towards
 
 1. **环境**：在 Ubuntu 笔记本上跑一遍测试（[1.4](#14-软件环境)），全部通过。
 2. **硬件**：支架刚性、线缆固定、控制器里设好负载；Box 开机预热 20–30 分钟。
-3. **标定板**：卡尺实测，按需修改 `target.yaml`；板固定在工作台上。
-4. **相机**：在 Box 上运行 `tools/zed_camera_yaml.py` 生成 `camera.yaml`，并和 ZED Explorer 显示的值核对。确认存下的图像是**校正后的单张左目图**：不是左右拼接图，不是原始未校正图，PNG 格式，1920×1200，`FLIP_MODE.OFF`。
+3. **标定板**：保持已确认的准确理论尺寸；板平整、固定在工作台上。
+4. **相机**：在 Box 上运行 `tools/zed_camera_yaml.py --output camera.yaml`，与采集程序的校正后左目内参和配置核对（见 2.1）；不要直接比对 Explorer 的 raw 内参。确认存下的图像是**校正后的单张左目图**：不是左右拼接图，不是原始未校正图，PNG 格式，1920×1200，`FLIP_MODE.OFF`。
 5. **单张图**：`detect --overlay`，应检出 36 个 tag，蓝色 `0` 在 tag 的物理右下角。
 6. **位姿**：确认 WebApp 当前的工具坐标系和工件坐标系都是 0；记录 8 个以上分散的姿态（附关节角），运行 `check-poses`，应判 `pass`，拟合出的偏移应接近 0。
 7. **标定**：采集 20–30 个姿态，带上支架 CAD 平移运行 `solve`。PnP 误差预计在 0.5 px 以下，然后逐条看警告。
 8. **重复性**：换一组姿态再标一次，用 `compare` 比较，应判 `CONSISTENT`。
-9. **独立验证**（有尖端工具时）：`validate`。
+9. **独立验证**（有尖端工具时）：另采未用于拟合的 session，运行 `validate --session`；不加 `--session` 仅检查板位姿。
 10. **调整门限**：根据前几次的实际数值，调整质量门限和诊断阈值。
 
 ## 坐标约定与依据

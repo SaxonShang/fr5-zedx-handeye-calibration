@@ -20,7 +20,7 @@ from .dataset import load_session, read_camera, read_poses
 from .geometry import read_image, write_image
 from .kinematics import check_convention, frame_findings, row_consistency
 from .solver import Options, calibrate
-from .validation import compare_results, read_touch_points, validate
+from .validation import compare_results, read_touch_points, validate_result
 
 EXIT_OK, EXIT_ERROR, EXIT_NOT_ACCEPTED = 0, 1, 2
 TEMPLATE = Path(__file__).resolve().parents[1] / "templates" / "session"
@@ -68,7 +68,7 @@ def init_command(args) -> int:
     print(f"Created {destination}\nNext:")
     print(f"  1. camera.yaml   {'REPLACE the placeholder intrinsics' if placeholder else 'check the intrinsics'} "
           "(python3 tools/zed_camera_yaml.py on the ZED Box)")
-    print("  2. target.yaml   check tagSize against the measured board")
+    print("  2. target.yaml   use the exact board definition: 6 x 6 tags, 55 mm, spacing 16.5 mm")
     print("  3. images/       one image per robot pose")
     print("  4. poses.csv     one row per image: flange pose in the base frame, plus joints")
     print(f"  5. python -m handeye solve --session {destination}")
@@ -140,16 +140,19 @@ def print_summary(result: dict):
               f"test {item['test']['pixel_rmse']:.3f} px, board {item['test']['board_position_rmse_mm']:.2f} mm / "
               f"{item['test']['board_rotation_rmse_deg']:.3f} deg")
     if "chosen" in result:
-        t = np.asarray(result["chosen"]["flange_T_left_camera"])[:3, 3] * 1000
-        print(f"Chosen {result['chosen_method']}: flange_T_left_camera translation "
+        t = np.asarray(result["chosen"]["pose_moving_T_left_camera"])[:3, 3] * 1000
+        moving = result["frames"]["pose_moving"]
+        print(f"Chosen {result['chosen_method']}: {moving}_T_left_camera translation "
               f"[{t[0]:.2f}, {t[1]:.2f}, {t[2]:.2f}] mm")
         u = result.get("uncertainty", {})
         if "translation_sd_mm" in u:
             print(f"  jackknife sd: translation {u['translation_sd_norm_mm']:.3f} mm "
                   f"{u['translation_sd_mm']}, rotation {u['rotation_sd_deg']:.4f} deg (random errors only)")
         scale = result.get("board_scale_check")
-        if scale:
-            print(f"  board scale (robot-metric fit): {scale['board_scale']:.4f}x target.yaml")
+        if scale and "board_scale" in scale:
+            print(f"  board scale diagnostic (geometry remains fixed): {scale['board_scale']:.4f}x target.yaml")
+        elif scale:
+            print(f"  board scale diagnostic: {scale.get('status', 'unavailable')}")
     check = result.get("intrinsics_check", {})
     if check.get("status") == "ok":
         print(f"  intrinsics from the images vs camera.yaml: focal {check['focal_change'][0] * 100:+.2f}% / "
@@ -172,38 +175,55 @@ def solve_command(args) -> int:
     return EXIT_OK if result["status"] == "accepted" else EXIT_NOT_ACCEPTED
 
 
+def _positive_threshold(value: float, name: str):
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be finite and positive")
+
+
 def validate_command(args) -> int:
+    _positive_threshold(args.max_rms_mm, "--max-rms-mm")
     result = json.loads(Path(args.result).read_text(encoding="utf-8"))
-    if "chosen" not in result:
-        raise ValueError(f"{args.result} has no calibration (status {result.get('status')})")
-    board = read_board(args.target) if args.target else result["board"]
+    if not isinstance(result, dict):
+        raise ValueError("result must be a JSON object")
+    board = read_board(args.target) if args.target else result.get("board")
+    if not isinstance(board, dict):
+        raise ValueError("result has no board definition; run solve again")
     points = read_touch_points(args.points)
-    if len(points) < 3:
-        raise ValueError(f"{args.points}: need at least 3 touch points, got {len(points)}")
-    report = validate(np.asarray(result["chosen"]["base_T_board"]), board, points)
-    for point in report["points"]:
-        print(f"  row {point['row']}: tag {point['tag_id']} {point['corner']}  error {point['error_mm']:.2f} mm")
-    print(f"Touch points vs calibration: RMS {report['rms_mm']:.2f} mm, max {report['max_mm']:.2f} mm")
-    if "board_pose_difference" in report:
+    session = load_session(args.session) if args.session else None
+    report = validate_result(result, board, points, session)
+    print(f"SCOPE: {report['scope']}\n{report['note']}")
+    if report["scope"] == "board_pose_check":
+        for point in report["points"]:
+            print(f"  row {point['row']}: tag {point['tag_id']} {point['corner']}  error {point['error_mm']:.2f} mm")
         diff = report["board_pose_difference"]
-        print(f"Board pose from touches vs calibration: {diff['translation_mm']:.2f} mm / {diff['rotation_deg']:.3f} deg "
+        print(f"Board pose from touches vs saved Y: {diff['translation_mm']:.2f} mm / {diff['rotation_deg']:.3f} deg "
               f"(touch fit residual {diff['touch_fit_rms_mm']:.2f} mm)")
+    else:
+        for view in report["views"]:
+            print(f"  independent image row {view['row']}: RMS {view['rms_mm']:.2f} mm, max {view['max_mm']:.2f} mm")
+        for view in report["rejected_views"]:
+            print(f"  rejected image row {view['row']}: {view['reason']}")
+    for warning in report.get("warnings", []):
+        print(f"WARNING: {warning}")
+    print(f"Touch-point error: RMS {report['rms_mm']:.2f} mm, max {report['max_mm']:.2f} mm")
+    passed = report["rms_mm"] <= args.max_rms_mm and report.get("max_view_rms_mm", 0) <= args.max_rms_mm
+    report.update(status="passed" if passed else "rejected", max_rms_mm=args.max_rms_mm)
+    print(f"STATUS: {report['status'].upper()} ({report['scope']})")
     if args.output:
         write_json(args.output, report)
-    return EXIT_OK if report["rms_mm"] <= args.max_rms_mm else EXIT_NOT_ACCEPTED
+    return EXIT_OK if passed else EXIT_NOT_ACCEPTED
 
 
 def compare_command(args) -> int:
+    for name in ("max_mm", "max_deg", "max_ratio"):
+        _positive_threshold(getattr(args, name), "--" + name.replace("_", "-"))
     results = [json.loads(Path(path).read_text(encoding="utf-8")) for path in args.results]
-    for path, result in zip(args.results, results):
-        if "chosen" not in result:
-            raise ValueError(f"{path} has no calibration (status {result.get('status')})")
-        if result.get("status") != "accepted":
-            print(f"WARNING: {path} was {result.get('status')}")
     names = [str(path) for path in args.results]
     rows = compare_results(results, names)
     worst = 0.0
     for row in rows:
+        for warning in row.get("warnings", []):
+            print(f"WARNING: {warning}")
         expected = ""
         if row["expected_random_mm"] is not None:
             # Floors keep noise-free (simulated) results from producing huge ratios.
@@ -271,7 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
     solve.add_argument("--max-distortion-px", type=float, default=defaults.max_distortion_px,
                        help="warn if residual radial distortion shifts the image corner by more")
     solve.add_argument("--allow-tcp-offset", action="store_true",
-                       help="poses are deliberately of a TCP, not the flange: only warn about it")
+                       help="poses deliberately refer to a TCP: output is reported_tcp_T_left_camera, never a flange transform")
     solve.set_defaults(func=solve_command)
 
     compare = commands.add_parser("compare", help="Compare results of independent sessions of the same mount")
@@ -282,9 +302,10 @@ def build_parser() -> argparse.ArgumentParser:
                          help="allowed multiple of the combined jackknife spread")
     compare.set_defaults(func=compare_command)
 
-    check_result = commands.add_parser("validate", help="Compare a result with pointer-touched board corners")
+    check_result = commands.add_parser("validate", help="Check saved board pose, or exercise hand-eye with an independent session")
     check_result.add_argument("--result", type=Path, required=True)
     check_result.add_argument("--points", type=Path, required=True)
+    check_result.add_argument("--session", type=Path, help="new independent session to validate X; same fixed board/mount, tool 0 and base/work frame 0")
     check_result.add_argument("--target", type=Path, help="board YAML; default: the one stored in the result")
     check_result.add_argument("--max-rms-mm", type=float, default=3.0)
     check_result.add_argument("--output", type=Path)

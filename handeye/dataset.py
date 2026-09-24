@@ -49,22 +49,52 @@ class Session:
     camera: dict  # camera.yaml as read, including free-form notes
 
 
+def validate_camera(camera: dict, source="camera.yaml") -> dict:
+    """Validate the documented rectified-left contract; old metadata is optional."""
+    if not isinstance(camera, dict):
+        raise ValueError(f"{source}: expected a mapping")
+    for key in ("image_width", "image_height"):
+        if type(camera.get(key)) is not int or camera[key] <= 0:
+            raise ValueError(f"{source}: {key} must be a positive integer")
+    for key in ("fx", "fy", "cx", "cy"):
+        if (type(camera.get(key)) not in (int, float) or not math.isfinite(camera[key])
+                or camera[key] <= 0):
+            raise ValueError(f"{source}: missing or invalid {key}: expected a finite positive number")
+    distortion = camera.get("distortion", [0.0] * 5)
+    if not isinstance(distortion, list):
+        raise ValueError(f"{source}: distortion must be a list of numbers")
+    if len(distortion) not in (4, 5, 8, 12, 14):  # the lengths OpenCV accepts
+        raise ValueError(f"{source}: distortion needs 4, 5, 8, 12 or 14 coefficients, got {len(distortion)}")
+    for index, value in enumerate(distortion):
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError(f"{source}: distortion[{index}] must be a finite number")
+    if "image_flip" in camera:
+        flip = camera["image_flip"]
+        # PyYAML interprets an unquoted OFF as False and ON as True.
+        if flip is not False and not (isinstance(flip, str) and flip.upper().split(".")[-1] == "OFF"):
+            raise ValueError(f"{source}: image_flip must be OFF for the calibration camera frame")
+    for key in ("image_view", "view"):
+        if key in camera and str(camera[key]).upper().split(".")[-1] != "LEFT":
+            raise ValueError(f"{source}: {key} must be LEFT (rectified left image)")
+    for key in ("rectified", "image_rectified"):
+        if key in camera and camera[key] is not True:
+            raise ValueError(f"{source}: {key} must be true (raw images are not supported)")
+    if ("calibration_source" in camera
+            and camera["calibration_source"] != "calibration_parameters.left_cam"):
+        raise ValueError(f"{source}: calibration_source must be calibration_parameters.left_cam")
+    if "camera_fps" in camera:
+        fps = camera["camera_fps"]
+        if type(fps) not in (int, float) or not math.isfinite(fps) or fps <= 0:
+            raise ValueError(f"{source}: camera_fps must be a finite positive number")
+    return camera
+
+
 def read_camera(path: Path) -> dict:
     try:
         camera = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
         raise ValueError(f"{path}: not valid YAML: {exc}") from exc
-    if not isinstance(camera, dict):
-        raise ValueError(f"{path}: expected a mapping")
-    for key in ("image_width", "image_height", "fx", "fy", "cx", "cy"):
-        if not isinstance(camera.get(key), (int, float)) or not math.isfinite(camera[key]) or camera[key] <= 0:
-            raise ValueError(f"{path}: missing or invalid {key}")
-    distortion = camera.get("distortion", [0.0] * 5)
-    if not isinstance(distortion, list) or not all(isinstance(v, (int, float)) for v in distortion):
-        raise ValueError(f"{path}: distortion must be a list of numbers")
-    if len(distortion) not in (4, 5, 8, 12, 14):  # the lengths OpenCV accepts
-        raise ValueError(f"{path}: distortion needs 4, 5, 8, 12 or 14 coefficients, got {len(distortion)}")
-    return camera
+    return validate_camera(camera, path)
 
 
 def camera_matrix(camera: dict) -> np.ndarray:
@@ -72,10 +102,13 @@ def camera_matrix(camera: dict) -> np.ndarray:
 
 
 def read_poses(path: Path) -> list[Sample]:
-    lines = [line for line in Path(path).read_text(encoding="utf-8-sig").splitlines()
-             if line.strip() and not line.lstrip().startswith("#")]
-    reader = csv.DictReader(io.StringIO("\n".join(lines)))
+    numbered_lines = [(number, line) for number, line in
+                      enumerate(Path(path).read_text(encoding="utf-8-sig").splitlines(), 1)
+                      if line.strip() and not line.lstrip().startswith("#")]
+    reader = csv.DictReader(io.StringIO("\n".join(line for _, line in numbered_lines)))
     header = [name.strip() for name in reader.fieldnames or []]
+    if len(set(header)) != len(header):
+        raise ValueError(f"{path}: repeated column names in header")
     missing = [name for name in ("image", *POSE_COLUMNS) if name not in header]
     if missing:
         raise ValueError(f"{path}: missing columns {missing}")
@@ -84,17 +117,31 @@ def read_poses(path: Path) -> list[Sample]:
         raise ValueError(f"{path}: give all of {list(JOINT_COLUMNS)} or none")
     samples, seen = [], set()
     for number, raw in enumerate(reader, start=1):
+        line = numbered_lines[min(reader.line_num - 1, len(numbered_lines) - 1)][0]
+        location = f"{path}: row {number} (line {line})"
+        if None in raw:
+            raise ValueError(f"{location}: more fields than the header")
         row = {key.strip(): (value or "").strip() for key, value in raw.items() if key}
         image = row["image"]
         if not image or image in seen:
-            raise ValueError(f"{path}: row {number}: empty or repeated image name {image!r}")
+            raise ValueError(f"{location}: empty or repeated image name {image!r}")
         seen.add(image)
-        try:
-            pose = [float(row[name]) for name in POSE_COLUMNS]
-            joints = [float(row[name]) for name in JOINT_COLUMNS] if all(has_joints) else None
-            matrix = pose_from_fr5(pose)
-        except ValueError as exc:
-            raise ValueError(f"{path}: row {number} ({image}): {exc}") from exc
+
+        def values(columns):
+            result = []
+            for name in columns:
+                try:
+                    value = float(row[name])
+                except (ValueError, KeyError) as exc:
+                    raise ValueError(f"{location} ({image}): {name} must be a finite number") from exc
+                if not math.isfinite(value):
+                    raise ValueError(f"{location} ({image}): {name} must be a finite number")
+                result.append(value)
+            return result
+
+        pose = values(POSE_COLUMNS)
+        joints = values(JOINT_COLUMNS) if all(has_joints) else None
+        matrix = pose_from_fr5(pose)
         samples.append(Sample(number, image, pose, matrix, joints))
     if not samples:
         raise ValueError(f"{path}: no pose rows; add one row per image below the header")

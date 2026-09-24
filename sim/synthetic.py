@@ -266,7 +266,7 @@ def compare_session(session: Path) -> dict:
     true_camera = np.asarray(truth["flange_T_left_camera"])
     rows = []
     for item in result.get("candidates", []):
-        estimate = np.asarray(item["flange_T_left_camera"])
+        estimate = np.asarray(item.get("pose_moving_T_left_camera", item.get("flange_T_left_camera")))
         rows.append({"method": item["method"], "chosen": item["method"] == result.get("chosen_method"),
                      "translation_error_mm": float(np.linalg.norm(estimate[:3, 3] - true_camera[:3, 3]) * 1000),
                      "rotation_error_deg": rotation_angle_degrees(true_camera[:3, :3].T @ estimate[:3, :3]),
@@ -357,7 +357,9 @@ SCENARIOS = [
      "pose noise 0.5 mm / 0.05 deg", None),
     ("joint-offsets", {"joint_offset_deg": 0.02}, "measure", "systematic 0.02 deg joint zero errors", None),
     ("jpeg-70", {"jpeg_quality": 70}, "measure", "JPEG q70 as a lossy-video stand-in", None),
-    ("test-outliers", {"pose_outliers": 2, "outlier_split": "test"}, "measure", "2 bad poses among test views", None),
+    ("test-outliers", {"pose_outliers": 2, "outlier_split": "test"}, "check",
+     "2 bad held-out poses: rejected without changing the training/CV winner",
+     lambda o: o["status"] == "rejected" and o["mm"] <= 0.5 and o["deg"] <= 0.05),
     ("combined", {"robot_noise_mm": 0.2, "robot_noise_deg": 0.02, "board_scale": 1.01, "k_error": (0.005, 3.0, -3.0)},
      "measure", "robot noise + board 1% + K error together", None),
 ]

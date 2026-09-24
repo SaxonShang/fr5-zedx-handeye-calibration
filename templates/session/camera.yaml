@@ -1,5 +1,5 @@
 # ZED X 校正后左目（VIEW.LEFT）的内参，必须与图像分辨率一致。
-# 快速填写：在 ZED Box 上运行  python3 tools/zed_camera_yaml.py > camera.yaml
+# 快速填写：在 ZED Box 上运行  python3 tools/zed_camera_yaml.py --output camera.yaml
 # 手动读取：camera.get_camera_information().camera_configuration.calibration_parameters.left_cam
 # 不要使用 SN<序列号>.conf 里的数值：那是未校正（raw）图像的内参和畸变。
 # 下面是 2.2 mm 镜头 HD1200 的名义值，只是占位，请替换为实际读出的值。
@@ -11,9 +11,13 @@ cx: 959.5
 cy: 599.5
 distortion: [0.0, 0.0, 0.0, 0.0, 0.0]   # 校正图为 0
 
-# 以下为记录用字段，求解时不读取，但建议如实填写。
+# 以下元数据必须与保存的图像一致；显式翻转或非校正左目配置会被拒绝。
+# 缺失字段仅为兼容旧数据，不代表这些设置已得到核验。
+image_view: LEFT
+rectified: true
 camera_serial: 0
 zed_sdk: "?"
 resolution: HD1200
 image_flip: "OFF"            # 必须 OFF；采集与实际使用一致
 self_calibration: disabled   # 采集与实际使用一致
+# 工具单独打开相机，默认关闭自标定；若开启，必须从保存图像的同一实例导出内参。

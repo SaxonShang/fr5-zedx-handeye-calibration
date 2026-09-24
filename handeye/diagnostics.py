@@ -20,7 +20,7 @@ def coverage(observations: list[dict], session) -> dict:
     areas, distances, tilts = [], [], []
     for obs in observations:
         ctb = obs["camera_T_board"]
-        rvec, _ = cv2.Rodrigues(ctb[:3, :3])
+        rvec = rotation_vector(ctb[:3, :3])
         points, _ = cv2.projectPoints(outline, rvec, ctb[:3, 3], session.k, session.distortion)
         view = np.zeros_like(union)
         cv2.fillConvexPoly(view, np.round(points.reshape(-1, 2) / scale).astype(np.int32), 1)
@@ -69,10 +69,13 @@ def bootstrap(train: list[dict], best: dict, k: np.ndarray, distortion: np.ndarr
                 x, _ = refine(subset, reference, best["base_T_board"], k, distortion)
             else:
                 x = fit_method(subset, best["method"], k, distortion)["flange_T_left_camera"]
-        except (cv2.error, ValueError, RuntimeError):
+            if not np.isfinite(x).all():
+                continue
+            rotation = rotation_vector(reference[:3, :3].T @ x[:3, :3])
+        except (cv2.error, ValueError, RuntimeError, FloatingPointError, np.linalg.LinAlgError):
             continue
         translations.append(x[:3, 3] * 1000.0)
-        rotations.append(rotation_vector(reference[:3, :3].T @ x[:3, :3]))
+        rotations.append(rotation)
     if len(translations) < 5:
         return {"method": "failed: too few successful subsets"}
     inflation = (n - d) / d  # delete-d jackknife variance factor
@@ -112,9 +115,12 @@ def intrinsics_from_images(observations: list[dict], session, options) -> dict:
     try:
         rms, k, distortion, _, _, std, _, _ = cv2.calibrateCameraExtended(
             objects, images, (session.width, session.height), k0.copy(), distortion0.copy(), flags=flags)
-    except cv2.error as exc:
-        return {"status": f"failed: {exc}", "warnings": []}
+    except (cv2.error, ValueError, FloatingPointError, np.linalg.LinAlgError) as exc:
+        return {"status": "failed", "warnings": [f"intrinsics diagnostic failed: {exc}"]}
     sd = std.ravel()  # fx, fy, cx, cy, k1, ...
+    if (not all(np.isfinite(value).all() for value in (rms, k, distortion, sd))
+            or len(sd) < 5 or np.any(sd[:5] < 0) or k[0, 0] <= 0 or k[1, 1] <= 0):
+        return {"status": "failed", "warnings": ["intrinsics diagnostic returned invalid estimates or uncertainty"]}
     r = _corner_radius(k0, session.width, session.height)
     k1_change = float(distortion.ravel()[0] - distortion0[0])
     result = {"status": "ok", "pixel_rmse": float(rms),
@@ -126,8 +132,8 @@ def intrinsics_from_images(observations: list[dict], session, options) -> dict:
               "radial_k1_change": k1_change, "radial_k1_sd": float(sd[4]),
               "distortion_corner_shift_px": abs(k1_change) * r ** 3 * k0[0, 0],
               "distortion_corner_shift_sd_px": float(sd[4]) * r ** 3 * k0[0, 0], "warnings": []}
-    focal = max(zip(map(abs, result["focal_change"]), result["focal_change_sd"]))
-    if focal[0] > max(options.max_focal_error, 3 * focal[1]):
+    if any(abs(change) > max(options.max_focal_error, 3 * sd)
+           for change, sd in zip(result["focal_change"], result["focal_change_sd"])):
         result["warnings"].append(f"focal length from the images differs from camera.yaml by "
                                   f"{result['focal_change'][0] * 100:+.2f}% / {result['focal_change'][1] * 100:+.2f}%: "
                                   "verify the intrinsics")
@@ -143,12 +149,12 @@ def intrinsics_from_images(observations: list[dict], session, options) -> dict:
 
 
 def board_scale(observations: list[dict], best: dict, session, options) -> dict:
-    """Refit hand-eye with a free board scale (K fixed to camera.yaml).
+    """Check consistency with the fixed, known-accurate board dimensions.
 
-    Robot translations are metric, so a wrong board size conflicts with them;
-    images alone cannot see it. In simulation a 1% error was recovered exactly,
-    while 0.2-0.5 mm robot noise moved the estimate by <= 0.1%. A wrong K
-    leaks in too (0.5% focal error -> -0.2%), but the image check flags that.
+    A free scale is fitted only as a diagnostic; it never replaces target.yaml
+    or changes the chosen hand-eye result. A departure from 1 indicates model
+    inconsistency, such as intrinsics, robot poses or image/pose pairing errors.
+    This fit cannot identify which source caused that inconsistency.
     """
     from scipy.optimize import least_squares
 
@@ -159,21 +165,38 @@ def board_scale(observations: list[dict], best: dict, session, options) -> dict:
         values = []
         for obs in observations:
             ctb = inverse(obs["base_T_flange"] @ x) @ y
-            rvec, _ = cv2.Rodrigues(ctb[:3, :3])
+            rvec = rotation_vector(ctb[:3, :3])
             projected, _ = cv2.projectPoints(obs["object_points"] * s, rvec, ctb[:3, 3], k, distortion)
             values.append((projected.reshape(-1, 2) - obs["image_points"]).ravel())
         return np.concatenate(values)
 
-    start = np.r_[matrix_to_parameters(best["flange_T_left_camera"]), matrix_to_parameters(best["base_T_board"]), 0.0]
-    fit = least_squares(residual, start, loss="huber", f_scale=2.0, x_scale="jac", max_nfev=300)
-    scale = math.exp(fit.x[12])
-    delta = inverse(best["flange_T_left_camera"]) @ parameters_to_matrix(fit.x[:6])
-    result = {"board_scale": scale,
-              "hand_eye_change": {"translation_mm": float(np.linalg.norm(delta[:3, 3]) * 1000),
-                                  "rotation_deg": rotation_angle_degrees(delta[:3, :3])},
-              "pixel_rmse": float(np.sqrt(np.mean(fit.fun ** 2))), "warnings": []}
+    def failure(status, reason):
+        return {"status": status, "warnings": [f"board scale consistency diagnostic {status}: {reason}"]}
+
+    try:
+        start = np.r_[matrix_to_parameters(best["flange_T_left_camera"]),
+                      matrix_to_parameters(best["base_T_board"]), 0.0]
+        fit = least_squares(residual, start, loss="huber", f_scale=2.0, x_scale="jac", max_nfev=300)
+        if not fit.success:
+            return failure("inconclusive", f"optimizer did not converge ({fit.message})")
+        if (not np.isfinite(fit.x).all() or not np.isfinite(fit.fun).all()
+                or np.size(fit.fun) == 0 or np.size(fit.fun) % 2):
+            return failure("failed", "optimizer returned invalid parameters or residuals")
+        scale = math.exp(fit.x[12])
+        delta = inverse(best["flange_T_left_camera"]) @ parameters_to_matrix(fit.x[:6])
+        # Same definition as PnP and hand-eye scores: one 2D error per corner.
+        pixel_rmse = float(np.sqrt(np.mean(np.sum(fit.fun.reshape(-1, 2) ** 2, axis=1))))
+        if not np.isfinite(scale) or scale <= 0 or not np.isfinite(delta).all() or not np.isfinite(pixel_rmse):
+            return failure("failed", "optimizer returned non-finite derived values")
+        result = {"status": "ok", "board_scale": scale,
+                  "hand_eye_change": {"translation_mm": float(np.linalg.norm(delta[:3, 3]) * 1000),
+                                      "rotation_deg": rotation_angle_degrees(delta[:3, :3])},
+                  "pixel_rmse": pixel_rmse, "warnings": [],
+                  "interpretation": "fixed board dimensions are authoritative; fitted scale diagnoses model inconsistency only"}
+    except (cv2.error, ValueError, RuntimeError, FloatingPointError, OverflowError, np.linalg.LinAlgError) as exc:
+        return failure("failed", str(exc))
     if abs(scale - 1.0) > options.max_scale_error:
-        result["warnings"].append(f"board scale fits {scale:.4f}x target.yaml ({(scale - 1) * 100:+.2f}%): "
-                                  "measure the printed board (a 1% error biased the translation ~4.5 mm in "
-                                  "simulation); large robot pose errors can also cause this")
+        result["warnings"].append(f"board scale consistency fit is {scale:.4f}x target.yaml ({(scale - 1) * 100:+.2f}%): "
+                                  "the board dimensions are fixed and accurate; check intrinsics, robot poses and "
+                                  "image/pose pairing for model inconsistency; this diagnostic does not change the board")
     return result

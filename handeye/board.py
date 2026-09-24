@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import math
 
 import cv2
 import numpy as np
@@ -20,13 +21,17 @@ def read_board(path: Path) -> dict:
     if not isinstance(board, dict) or board.get("target_type") != "aprilgrid":
         raise ValueError(f"{path}: target_type must be aprilgrid")
     for key in ("tagCols", "tagRows"):
-        if not isinstance(board.get(key), int) or board[key] < 2:
+        if type(board.get(key)) is not int or board[key] < 2:
             raise ValueError(f"{path}: invalid {key}")
     for key in ("tagSize", "tagSpacing"):
-        if not isinstance(board.get(key), (int, float)) or board[key] <= 0:
+        if (type(board.get(key)) not in (int, float) or not math.isfinite(board[key])
+                or board[key] <= 0):
             raise ValueError(f"{path}: invalid {key}")
     if board["tagCols"] * board["tagRows"] > 587:
         raise ValueError(f"{path}: more tags than AprilTag 36h11 supports")
+    extent = max(board["tagCols"], board["tagRows"]) * board["tagSize"] * (1 + board["tagSpacing"])
+    if not math.isfinite(extent):
+        raise ValueError(f"{path}: tagSize/tagSpacing produce non-finite board dimensions")
     return {k: board[k] for k in ("target_type", "tagCols", "tagRows", "tagSize", "tagSpacing")}
 
 

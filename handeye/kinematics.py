@@ -230,7 +230,7 @@ def frame_findings(consistency: dict) -> tuple[str | None, str | None]:
     if _offset_is_large(origin):
         base = (f"poses look like they are in a user/work frame "
                 f"({np.linalg.norm(origin['translation_mm']):.1f} mm / {origin['rotation_deg']:.2f} deg from the "
-                "robot base): the hand-eye result is unaffected, but base_T_board and touch points are in that frame")
+                "robot base): the hand-eye result is unaffected, but pose_reference_T_board is in the reported work frame; base-frame touch validation is unavailable")
     return tool, base
 
 

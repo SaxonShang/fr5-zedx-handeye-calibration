@@ -19,21 +19,23 @@ def fit_pose(obj: np.ndarray, img: np.ndarray, k: np.ndarray, distortion: np.nda
     Such a corner locked onto the wrong feature; a few of them can hide under
     the view RMSE limit while still biasing the pose. Points come 4 per tag.
     """
+    if len(obj) != len(img) or len(obj) % 4 or len(obj) < 4 * min_tags:
+        raise ValueError("insufficient complete tags for PnP refinement")
     subset = np.arange(len(obj))
-    for _ in range(4):
+    for _ in range(len(obj) // 4 - min_tags + 1):
         rvec, tvec = cv2.solvePnPRefineLM(obj[subset], img[subset], k, distortion, rvec, tvec)
         projected, _ = cv2.projectPoints(obj[subset], rvec, tvec, k, distortion)
         errors = np.linalg.norm(projected.reshape(-1, 2) - img[subset], axis=1)
+        if not np.isfinite(errors).all():
+            raise ValueError("non-finite PnP residuals")
         tags = subset // 4
         bad = np.unique(tags[errors > max(1.0, 5.0 * float(np.median(errors)))])
-        if not len(bad) or len(np.unique(tags)) - len(bad) < min_tags:
-            break
+        if not len(bad):
+            return rvec, tvec, subset, float(np.sqrt(np.mean(errors ** 2)))
+        if len(np.unique(tags)) - len(bad) < min_tags:
+            raise ValueError("too few good complete tags after PnP outlier removal")
         subset = subset[~np.isin(tags, bad)]
-    else:
-        rvec, tvec = cv2.solvePnPRefineLM(obj[subset], img[subset], k, distortion, rvec, tvec)
-        projected, _ = cv2.projectPoints(obj[subset], rvec, tvec, k, distortion)
-        errors = np.linalg.norm(projected.reshape(-1, 2) - img[subset], axis=1)
-    return rvec, tvec, subset, float(np.sqrt(np.mean(errors ** 2)))
+    raise ValueError("PnP outlier removal did not converge")
 
 
 def _rmse(obj, img, rvec, tvec, k, distortion) -> float:
@@ -68,7 +70,7 @@ def build_observations(session: Session, min_tags: int = 4,
             ok, rvec, tvec = cv2.solvePnP(obj, img, k, distortion, flags=cv2.SOLVEPNP_ITERATIVE)
             if ok:
                 rvec, tvec, subset, rmse = fit_pose(obj, img, k, distortion, rvec, tvec, min_tags)
-        except cv2.error:
+        except (cv2.error, ValueError):
             pass
         if rmse > max_pnp_rmse:  # RANSAC only as a fallback
             try:
@@ -77,9 +79,15 @@ def build_observations(session: Session, min_tags: int = 4,
                     confidence=0.999, flags=cv2.SOLVEPNP_EPNP)
                 if not ok or inliers is None or len(inliers) < max(12, math.ceil(0.6 * len(obj))):
                     raise ValueError("insufficient PnP inliers")
-                subset = inliers.reshape(-1)
-                rvec, tvec = cv2.solvePnPRefineLM(obj[subset], img[subset], k, distortion, rvec, tvec)
-                rmse = _rmse(obj[subset], img[subset], rvec, tvec, k, distortion)
+                # RANSAC can keep only three corners of a bad tag. Refit only
+                # complete inlier tags, then apply the same whole-tag checks.
+                inlier_indices = np.unique(inliers.reshape(-1))
+                whole_tags = [tag for tag in np.unique(inlier_indices // 4)
+                              if np.count_nonzero(inlier_indices // 4 == tag) == 4]
+                subset = np.asarray([i for tag in whole_tags for i in range(4 * tag, 4 * tag + 4)], dtype=int)
+                rvec, tvec, kept, rmse = fit_pose(
+                    obj[subset], img[subset], k, distortion, rvec, tvec, min_tags)
+                subset = subset[kept]
             except (cv2.error, ValueError):
                 reject("PnP failed")
                 continue

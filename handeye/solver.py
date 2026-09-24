@@ -18,7 +18,7 @@ import numpy as np
 from . import diagnostics
 from .dataset import Session
 from .geometry import inverse, matrix_to_parameters, parameters_to_matrix, rotation_angle_degrees, \
-    transform, transform_mean
+    rotation_vector, transform, transform_mean
 from .kinematics import frame_findings, row_consistency
 from .observations import build_observations
 
@@ -42,7 +42,7 @@ class Options:
     expected_tolerance_mm: float = 10.0
     max_candidate_spread_mm: float = 2.0
     max_candidate_spread_deg: float = 0.2
-    allow_tcp_offset: bool = False  # poses deliberately of a TCP rather than the flange
+    allow_tcp_offset: bool = False  # exports a reported-TCP transform, never a flange alias
     # Diagnostics (warnings only)
     bootstrap: int = 30
     seed: int = 0
@@ -52,11 +52,29 @@ class Options:
     max_distortion_px: float = 1.0
 
 
+    def __post_init__(self):
+        positive = ("max_pnp_rmse", "max_test_px", "max_view_px", "max_board_mm", "max_board_deg",
+                    "expected_tolerance_mm", "max_candidate_spread_mm", "max_candidate_spread_deg",
+                    "max_scale_error", "max_focal_error", "max_principal_point_px", "max_distortion_px")
+        for name in positive:
+            value = getattr(self, name)
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be finite and positive")
+        for name, minimum in (("min_tags", 1), ("bootstrap", 0), ("seed", 0)):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+                raise ValueError(f"{name} must be an integer >= {minimum}")
+        if self.expected_translation_mm is not None:
+            value = np.asarray(self.expected_translation_mm, dtype=float)
+            if value.shape != (3,) or not np.all(np.isfinite(value)):
+                raise ValueError("expected_translation_mm must contain three finite values")
+
+
 def check_motion_diversity(observations: list[dict]):
     first = observations[0]["base_T_flange"]
     vectors = []
     for obs in observations[1:]:
-        rvec, _ = cv2.Rodrigues((inverse(first) @ obs["base_T_flange"])[:3, :3])
+        rvec = rotation_vector((inverse(first) @ obs["base_T_flange"])[:3, :3])
         if np.linalg.norm(rvec) > np.deg2rad(8):
             vectors.append(rvec.reshape(3) / np.linalg.norm(rvec))
     if len(vectors) < 2 or max(float(np.linalg.norm(np.cross(a, b)))
@@ -92,7 +110,7 @@ def score(observations: list[dict], flange_t_camera: np.ndarray, base_t_board: n
         camera_t_board = inverse(obs["base_T_flange"] @ flange_t_camera) @ base_t_board
         if np.any((camera_t_board[:3, :3] @ obs["object_points"].T + camera_t_board[:3, 3:4])[2] <= 0):
             return {"pixel_rmse": math.inf, "board_position_rmse_mm": math.inf, "board_rotation_rmse_deg": math.inf}
-        rvec, _ = cv2.Rodrigues(camera_t_board[:3, :3])
+        rvec = rotation_vector(camera_t_board[:3, :3])
         projected, _ = cv2.projectPoints(obs["object_points"], rvec, camera_t_board[:3, 3], k, distortion)
         corner_errors.extend(np.sum((projected.reshape(-1, 2) - obs["image_points"]) ** 2, axis=1))
     return {"pixel_rmse": float(np.sqrt(np.mean(corner_errors))),
@@ -112,14 +130,14 @@ def refine(train: list[dict], initial_camera: np.ndarray, initial_board: np.ndar
             if np.any((camera_t_board[:3, :3] @ obs["object_points"].T + camera_t_board[:3, 3:4])[2] <= 0):
                 values.append(np.full(obs["image_points"].size, 10000.0))
                 continue
-            rvec, _ = cv2.Rodrigues(camera_t_board[:3, :3])
+            rvec = rotation_vector(camera_t_board[:3, :3])
             projected, _ = cv2.projectPoints(obs["object_points"], rvec, camera_t_board[:3, 3], k, distortion)
             values.append((projected.reshape(-1, 2) - obs["image_points"]).ravel())
         return np.concatenate(values)
 
     result = least_squares(residual, np.r_[matrix_to_parameters(initial_camera), matrix_to_parameters(initial_board)],
                            loss="huber", f_scale=2.0, x_scale="jac", max_nfev=200)
-    if not result.success and result.status <= 0:
+    if not result.success or not np.all(np.isfinite(result.x)) or not np.all(np.isfinite(result.fun)):
         raise RuntimeError(f"Pixel refinement did not converge: {result.message}")
     return parameters_to_matrix(result.x[:6]), parameters_to_matrix(result.x[6:])
 
@@ -187,9 +205,14 @@ def quality_gate(best: dict, candidates: list[dict], test_views: list[dict],
     """(reasons to reject, warnings)."""
     reasons, warnings = [], []
     test = best["test"]
+    if (not all(math.isfinite(value) for value in test.values())
+            or not test_views
+            or not all(math.isfinite(row[key]) for row in test_views
+                       for key in ("pixel_rmse", "board_position_mm", "board_rotation_deg"))):
+        reasons.append("chosen method has invalid/non-finite held-out test results; no fallback method is selected")
     if test["pixel_rmse"] > options.max_test_px:
         reasons.append(f"test corner RMSE {test['pixel_rmse']:.2f} px > {options.max_test_px} px")
-    worst = max(test_views, key=lambda row: row["pixel_rmse"])
+    worst = max(test_views, key=lambda row: row["pixel_rmse"], default={"pixel_rmse": 0.0})
     if worst["pixel_rmse"] > options.max_view_px:
         reasons.append(f"test view row {worst['row']} ({worst['image']}) RMSE {worst['pixel_rmse']:.2f} px "
                        f"> {options.max_view_px} px")
@@ -218,16 +241,27 @@ def quality_gate(best: dict, candidates: list[dict], test_views: list[dict],
 
 
 def _finite(item: dict) -> bool:
+    """Eligibility for selection uses training/CV only, never held-out tests."""
     return (math.isfinite(item["cv_pixel_rmse"])
-            and all(math.isfinite(v) for phase in ("train", "test") for v in item[phase].values()))
+            and all(math.isfinite(v) for v in item["train"].values())
+            and all(np.all(np.isfinite(item[key])) for key in ("flange_T_left_camera", "base_T_board")))
 
 
-def _serialise(item: dict) -> dict:
-    return {"method": item["method"],
-            "flange_T_left_camera": item["flange_T_left_camera"].tolist(),
-            "left_camera_T_flange": inverse(item["flange_T_left_camera"]).tolist(),
-            "base_T_board": item["base_T_board"].tolist(),
+def _serialise(item: dict, frames: dict) -> dict:
+    x, y = item["flange_T_left_camera"], item["base_T_board"]
+    data = {"method": item["method"],
+            "pose_moving_T_left_camera": x.tolist(),
+            "left_camera_T_pose_moving": inverse(x).tolist(),
+            "pose_reference_T_board": y.tolist(),
             "cv_pixel_rmse": item["cv_pixel_rmse"], "train": item["train"], "test": item["test"]}
+    # These names are contracts, not just convenient labels. Never export a
+    # TCP/work-frame estimate under a flange/base name (including rejected fits).
+    if frames["pose_moving"] == "flange":
+        data["flange_T_left_camera"] = data["pose_moving_T_left_camera"]
+        data["left_camera_T_flange"] = data["left_camera_T_pose_moving"]
+    if frames["pose_reference"] == "base":
+        data["base_T_board"] = data["pose_reference_T_board"]
+    return data
 
 
 def calibrate(session: Session, options: Options | None = None) -> dict:
@@ -238,11 +272,16 @@ def calibrate(session: Session, options: Options | None = None) -> dict:
     test = [o for i, o in enumerate(observations) if i % 5 == 0]
     train = [o for i, o in enumerate(observations) if i % 5 != 0]
     warnings = []
+    frames = {"pose_moving": "reported_tcp" if options.allow_tcp_offset else "flange",
+              "pose_reference": "base", "camera": "zed_left_rectified_optical",
+              "board": "kalibr_aprilgrid", "basis": "declared_without_joint_check"}
     result = {
+        "schema_version": 2, "frames": frames,
         "status": None, "reasons": [], "warnings": warnings,
         "note": "accepted = these internal consistency checks passed; it is not a measured task accuracy. "
-                "Board size, intrinsics and image flip cannot be fully checked from the data; see diagnostics "
-                "and run 'validate' against independently measured points.",
+                "The configured board dimensions are fixed ground truth. Intrinsics, pose frames and image flip "
+                "cannot be fully certified by these data. 'validate' without --session checks only board pose; "
+                "use an independent --session and measured points to check the hand-eye chain.",
         "options": asdict(options), "session": str(session.path), "camera": session.camera,
         "board": session.board, "views": len(session.samples),
         "accepted_views": [{"row": o["row"], "image": o["image"], "tag_ids": o["tag_ids"],
@@ -280,12 +319,20 @@ def calibrate(session: Session, options: Options | None = None) -> dict:
     frame_reasons = []  # the constant tool/base offsets are only identifiable with varied rotations
     if consistency is not None:
         tool_frame, user_frame = frame_findings(consistency)
+        frames["basis"] = "declared_with_joint_check"
         if tool_frame:
+            frames["pose_moving"] = "reported_tcp"
             # The result would be camera relative to that TCP, off by the tool offset (120 mm in simulation).
             (warnings if options.allow_tcp_offset else frame_reasons).append(
                 tool_frame + ("" if options.allow_tcp_offset else "; or pass --allow-tcp-offset if intended"))
         if user_frame:
+            frames["pose_reference"] = "reported_work_frame"
             warnings.append(user_frame)
+    if frames["pose_moving"] != "flange":
+        warnings.append("output is relative to the reported TCP; flange_T_left_camera is intentionally absent. "
+                        "The TCP offset/identity must be known before converting or comparing this result")
+        if options.expected_translation_mm is not None:
+            frame_reasons.append("flange mount CAD cannot be compared with a reported-TCP transform; use flange poses")
 
     notes = []
     candidates = fit_candidates(train, k, distortion, options.refine, notes)
@@ -293,19 +340,22 @@ def calibrate(session: Session, options: Options | None = None) -> dict:
     for item in candidates:
         item["train"] = score(train, item["flange_T_left_camera"], item["base_T_board"], k, distortion)
         item["cv_pixel_rmse"] = cv_rmse.get(item["method"], math.inf)
-        item["test"] = score(test, item["flange_T_left_camera"], item["base_T_board"], k, distortion)
     warnings.extend(notes)
-    result["candidates"] = [_serialise(item) for item in candidates]
     usable = [item for item in candidates if _finite(item)]
-    if not usable:
-        return _status(result, "rejected", frame_reasons + ["no hand-eye method produced finite results"])
-    best = min(usable, key=lambda item: item["cv_pixel_rmse"])
+    # Freeze the winner before looking at any held-out test score. A failed
+    # test rejects this winner instead of silently choosing another method.
+    best = min(usable, key=lambda item: item["cv_pixel_rmse"]) if usable else None
+    for item in candidates:
+        item["test"] = score(test, item["flange_T_left_camera"], item["base_T_board"], k, distortion)
+    result["candidates"] = [_serialise(item, frames) for item in candidates]
+    if best is None:
+        return _status(result, "rejected", frame_reasons + ["no hand-eye method produced finite training/CV results"])
     test_views = view_errors(test, best["flange_T_left_camera"], best["base_T_board"], k, distortion)
     reasons, gate_warnings = quality_gate(best, usable, test_views, options)
     reasons = frame_reasons + reasons
     warnings.extend(gate_warnings)
     result.update({
-        "chosen_method": best["method"], "chosen": _serialise(best), "test_views": test_views,
+        "chosen_method": best["method"], "chosen": _serialise(best, frames), "test_views": test_views,
         "selection": {"rule": f"lowest {CV_FOLDS}-fold cross-validated corner RMSE on training views; "
                               "test views are never used to choose",
                       "cv_pixel_rmse": {item["method"]: item["cv_pixel_rmse"] for item in candidates}},
