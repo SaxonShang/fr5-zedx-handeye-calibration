@@ -5,7 +5,7 @@
 - **输入**：标定板图像、每张图对应的法兰位姿（最好附关节角）、相机内参。
 - **输出**：手眼结果，以及说明结果可信程度的质量报告。
 
-图像和位姿由你们自己的系统采集，本仓库只负责标定，不依赖 ZED 或 FAIRINO 的 SDK。
+图像和位姿由你们自己的系统采集，本仓库只负责标定，不依赖 ZED 或 FAIRINO 的 SDK。维护和修改代码前，先读 [DEVELOPMENT.md](DEVELOPMENT.md)。
 
 ## 快速上手
 
@@ -69,6 +69,7 @@ Windows 上把 `.venv/bin/python` 换成 `.venv\Scripts\python.exe`。
 ```text
 calibration/
 ├─ README.md
+├─ DEVELOPMENT.md            维护与交接说明（约定、设计原因、已知问题）
 ├─ requirements.txt
 ├─ handeye/                  标定算法，用 python -m handeye 运行
 │  ├─ __main__.py            命令行：init / detect / check-poses / solve / compare / validate
