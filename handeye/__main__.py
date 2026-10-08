@@ -15,6 +15,7 @@ import cv2
 import numpy as np
 import yaml
 
+from . import python_command
 from .board import detect_board, detector, read_board
 from .dataset import load_session, read_camera, read_poses
 from .geometry import read_image, write_image
@@ -71,7 +72,7 @@ def init_command(args) -> int:
     print("  2. target.yaml   use the exact board definition: 6 x 6 tags, 55 mm, spacing 16.5 mm")
     print("  3. images/       one image per robot pose")
     print("  4. poses.csv     one row per image: flange pose in the base frame, plus joints")
-    print(f"  5. python -m handeye solve --session {destination}")
+    print(f"  5. {python_command()} -m handeye solve --session {destination}")
     return EXIT_OK
 
 

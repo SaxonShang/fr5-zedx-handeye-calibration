@@ -9,60 +9,66 @@
 
 ## 快速上手
 
+下面的命令都在 Windows 的 PowerShell 或 cmd 里运行，先进入仓库根目录（Ubuntu 的写法见 [1.4](#14-软件环境)）。
+
 **0. 安装环境**（一次即可，详见 [1.4](#14-软件环境)）
 
-```bash
-python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
+```powershell
+py -m venv .venv
+```
+
+```powershell
+.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
 **1. 新建 session 文件夹**。从 `templates/session/` 复制出 `camera.yaml`、`target.yaml`、`poses.csv`、`touch_points.csv`，并建好空的 `images/`：
 
-```bash
-.venv/bin/python -m handeye init --session calibration-data/sessions/s001
+```powershell
+.venv\Scripts\python.exe -m handeye init --session calibration-data\sessions\s001
 ```
 
 **2. 填写配置**（写法见 [2.1](#21-session-文件夹与配置文件)）
 
 | 文件 | 填什么 | 最快的办法 |
 |---|---|---|
-| `camera.yaml` | 校正后左目内参 | 在 ZED Box 上运行 `python3 tools/zed_camera_yaml.py --output camera.yaml`，再拷过来覆盖 |
+| `camera.yaml` | 校正后左目内参 | 在 ZED Box（Linux）上运行 `python3 tools/zed_camera_yaml.py --output camera.yaml`，再拷过来覆盖 |
 | `target.yaml` | 标定板尺寸 | 使用已确认准确的 6×6、55 mm、间隙 16.5 mm |
 | `images/` | 每个机位一张图 | 从 Box 拷过来 |
 | `poses.csv` | 每张图一行：法兰位姿 + 6 个关节角 | 照抄 FR5 WebApp 的显示值 |
 
 **3. 核对位姿表**（可选，需要关节角）
 
-```bash
-.venv/bin/python -m handeye check-poses --poses calibration-data/sessions/s001/poses.csv
+```powershell
+.venv\Scripts\python.exe -m handeye check-poses --poses calibration-data\sessions\s001\poses.csv
 ```
 
 **4. 标定**。`--expected-translation-mm` 是事先粗估的"左目光心在法兰坐标系中的位置"（mm），只用来核对结果，估法见 [2.1](#21-session-文件夹与配置文件) 末尾。下面的 `60 -75 45` 只是示例，要换成自己的估计值：
 
-```bash
-.venv/bin/python -m handeye solve --session calibration-data/sessions/s001 --expected-translation-mm 60 -75 45
+```powershell
+.venv\Scripts\python.exe -m handeye solve --session calibration-data\sessions\s001 --expected-translation-mm 60 -75 45
 ```
 
 屏幕输出和 `result.json` 的读法见 [第 4 节](#4-结果评估与诊断)。
 
 **5. 复核**（推荐）。换一组不同的姿态再建一个 session、再标定一次，比较两次的结果：
 
-```bash
-.venv/bin/python -m handeye compare --results calibration-data/sessions/s001/result.json calibration-data/sessions/s002/result.json
+```powershell
+.venv\Scripts\python.exe -m handeye compare --results calibration-data\sessions\s001\result.json calibration-data\sessions\s002\result.json
 ```
 
 第一次上真机，请按 [第 5 节](#5-上真机试标清单) 的试标清单逐项核对。
 
 **没有硬件也能先跑一遍**：用仿真生成一个与真实数据格式完全相同的 session，再对它标定：
 
-```bash
-.venv/bin/python -B sim/synthetic.py make --output calibration-data/sim_runs/demo --robot-noise-mm 0.2 --robot-noise-deg 0.02
+```powershell
+.venv\Scripts\python.exe -B sim\synthetic.py make --output calibration-data\sim_runs\demo --robot-noise-mm 0.2 --robot-noise-deg 0.02
 ```
 
-```bash
-.venv/bin/python -m handeye solve --session calibration-data/sim_runs/demo
+```powershell
+.venv\Scripts\python.exe -m handeye solve --session calibration-data\sim_runs\demo
 ```
 
-Windows 上把 `.venv/bin/python` 换成 `.venv\Scripts\python.exe`。
+不需要激活虚拟环境，直接调用 `.venv\Scripts\python.exe` 即可，这样也不会碰到 PowerShell 禁止运行脚本的限制。
 
 ## 目录结构
 
@@ -102,7 +108,7 @@ calibration/
 | 相机 | ZED X，2.2 mm 镜头：1920×1200 全局快门，视场 110°×80°，名义 fx ≈ 733 px，基线 120 mm，239 g |
 | 计算单元 | ZED Box Mini（Orin NX 16GB）：600 g，12 V（10.5–13.5 V），最大 60 W，Jetson 上已装好 ZED SDK |
 | 标定板 | Kalibr Aprilgrid 6×6，tag 边长 55 mm，间隙 16.5 mm，tag 阵列外缘 412.5 mm |
-| 电脑 | 笔记本（Ubuntu 22.04 或 Windows），只运行本仓库 |
+| 电脑 | Windows 笔记本（Ubuntu 也可以），只运行本仓库 |
 
 ### 1.2 连接方式
 
@@ -112,11 +118,17 @@ FR5 末端法兰
               └─ ZED Box Mini ──HDMI── 显示器（查看、保存图像）
                   GMSL2 短线，与相机一起随末端运动；12 V 电源线沿机械臂走线
 
-笔记本 ──网线── FR5 控制器：用 WebApp 移动机械臂，读取位姿和关节角
-图像从 Box 拷到笔记本的 session/images/ 下
+Windows 笔记本 ──网线── FR5 控制器：在浏览器里用 WebApp 移动机械臂，读取位姿和关节角
+图像从 Box 拷到笔记本的 session\images\ 下
 ```
 
 每个机位：用 WebApp 把机械臂移到位 → 等它完全停稳 → 在 Box 上保存一张图 → 在 WebApp 上抄下法兰位姿和 6 个关节角。
+
+图像可以用 U 盘拷，也可以用 Windows 自带的 `scp` 从 Box（Linux）复制。下面的用户名、IP 和图像目录都要换成你们 Box 上的实际值：
+
+```powershell
+scp -r 用户名@Box的IP:/home/用户名/images calibration-data\sessions\s001\
+```
 
 ### 1.3 安装与采集要点
 
@@ -132,34 +144,32 @@ FR5 末端法兰
 
 ### 1.4 软件环境
 
-**电脑**：需要 Python ≥ 3.9。Ubuntu 22.04 自带的 3.10 即可；不需要 ZED 或 FAIRINO 的 SDK。
+**电脑（Windows 10/11）**：从 [python.org](https://www.python.org/downloads/windows/) 安装 Python 3.10 或更新版本，安装时保持默认勾选的 `py` 启动器。不需要 ZED 或 FAIRINO 的 SDK。在仓库根目录打开 PowerShell 或 cmd，依次运行：
 
-```bash
-sudo apt install python3-venv
+```powershell
+py -m venv .venv
 ```
 
-```bash
-python3 -m venv .venv
+```powershell
+.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-```bash
-.venv/bin/python -m pip install -r requirements.txt
+```powershell
+.venv\Scripts\python.exe -B -m unittest discover -s tests
 ```
 
-Windows 用 `python -m venv .venv` 和 `.venv\Scripts\python.exe -m pip install -r requirements.txt`。依赖为 numpy、OpenCV contrib 4.x、SciPy、PyYAML。OpenCV 限定 4.x，因为 [5.0.0.93 的 Python 包缺失 `calibrateHandEye`](https://github.com/opencv/opencv/issues/29565)。仓库放在中文路径下也能正常读写图像。
+最后一条运行全部 67 个单元测试，约 1–1.5 分钟，应显示 `OK`。之后所有命令都用 `.venv\Scripts\python.exe`，不需要激活虚拟环境。
 
-测试过的依赖组合（都在 Windows 上）。当前的 67 个单元测试在 3.14.7 这一行的环境中全部通过；3.10.21 这一行是在上一版（35 个测试）时验证的：
+依赖为 numpy、OpenCV contrib 4.x、SciPy、PyYAML。OpenCV 限定 4.x，因为 [5.0.0.93 的 Python 包缺失 `calibrateHandEye`](https://github.com/opencv/opencv/issues/29565)。仓库放在中文路径下也能正常读写图像。
+
+测试过的依赖组合（都在 Windows 上，67 个单元测试在两种环境中都全部通过）：
 
 | Python | opencv-contrib-python | numpy | scipy | PyYAML |
 |---|---|---|---|---|
 | 3.10.21 | 4.14.0 | 2.2.6 | 1.15.3 | 6.0.3 |
 | 3.14.7 | 4.14.0 | 2.5.3 | 1.18.1 | 6.0.3 |
 
-第一行是 pip 在 Python 3.10 下自动选出的版本，Ubuntu 22.04 上应该相同。到 Ubuntu 上先跑一遍测试确认：
-
-```bash
-.venv/bin/python -B -m unittest discover -s tests
-```
+**也可以用 Ubuntu**（22.04 自带的 Python 3.10 即可，但还没在 Ubuntu 上跑过测试）：先 `sudo apt install python3-venv`，再用 `python3 -m venv .venv` 建环境；本文所有命令里的 `.venv\Scripts\python.exe` 换成 `.venv/bin/python`，路径里的 `\` 换成 `/`。
 
 **ZED Box**：需要 ZED SDK、`pyzed` 和 PyYAML（`python3 -m pip install PyYAML`）；只需把 `tools/zed_camera_yaml.py` 拷过去运行，用来导出内参（尚未在真机测试；须与保存图像的采集程序使用相同配置和校正后左目内参，不能直接与 Explorer 的 raw 内参混用）。
 
@@ -262,22 +272,22 @@ X = flange_T_left_camera（要求的手眼结果）   Y = base_T_board（标定�
 - 诊断：`--bootstrap`（jackknife 子集数，默认 30，0 为关闭）、`--max-scale-error`（0.003）、`--max-focal-error`（0.003）、`--max-principal-point-px`（3）、`--max-distortion-px`（1）。
 - `--allow-tcp-offset`：确实要标定相机相对某个 TCP 的位姿时使用，这时位姿读成 TCP 只警告、不拒绝。结果只输出 `pose_moving_T_left_camera`，没有 `flange_T_left_camera`，也不能用于 `compare`、`validate` 和支架 CAD 核对（见 [4.4](#44-诊断与处理)）。标定相对法兰的位姿时不需要它。
 
-运行 `python -m handeye solve --help` 查看全部选项。
+运行 `.venv\Scripts\python.exe -m handeye solve --help` 查看全部选项。
 
 ## 3. 仿真验证
 
 `sim/synthetic.py` 按实际参数渲染 Kalibr 板图像：板 412.5 mm，ZED X 2.2 mm（fx=733），1920×1200。姿态必须有 FR5 名义逆解、在 URDF 关节限位内，并远离奇异位形。输出格式与真实 session 完全相同，另附真值 `truth.json` 和尖端点 `touch_points.csv`。
 
-```bash
-.venv/bin/python -B -m unittest discover -s tests -v
+```powershell
+.venv\Scripts\python.exe -B -m unittest discover -s tests -v
 ```
 
-```bash
-.venv/bin/python -B sim/synthetic.py suite
+```powershell
+.venv\Scripts\python.exe -B sim\synthetic.py suite
 ```
 
-```bash
-.venv/bin/python -B sim/synthetic.py compare --session calibration-data/sim_runs/demo
+```powershell
+.venv\Scripts\python.exe -B sim\synthetic.py compare --session calibration-data\sim_runs\demo
 ```
 
 - `make` 的注入选项：`--robot-noise-mm/--robot-noise-deg`、`--board-scale`、`--k-error`、`--residual-k1`、`--flip180`、`--euler-order xyz`、`--tcp-offset-mm`、`--user-frame`、`--pose-outliers`、`--pose-typo`、`--joint-offset-deg`、`--jpeg-quality`、`--single-axis`。
@@ -390,8 +400,8 @@ WARNING: the board covered only 40% of the image over all views; move it towards
 
 **重复性**（不需要额外工具，推荐每次都做）：安装不动，换一组不同的姿态再建一个 session、再标定一次，然后比较：
 
-```bash
-.venv/bin/python -m handeye compare --results calibration-data/sessions/s001/result.json calibration-data/sessions/s002/result.json
+```powershell
+.venv\Scripts\python.exe -m handeye compare --results calibration-data\sessions\s001\result.json calibration-data\sessions\s002\result.json
 ```
 
 仿真示例：两组各 20 个姿态，结果相差 0.148 mm，是 jackknife 随机误差尺度（0.225 mm）的 0.7 倍，判定为一致。
@@ -400,16 +410,16 @@ WARNING: the board covered only 40% of the image over all views; move it towards
 
 **板位姿检查**（需要尖端工具）：用已知 TCP 的尖端工具，测量板角点在机械臂基坐标系中的位置，填写 `touch_points.csv`。至少 3 个不同且不共线的角点，推荐 0 BL、5 BR、30 TL、35 TR 加内部角。程序拒绝重复、非有限和近共线数据；第二方向的 RMS 展布需至少 10 mm，这是项目默认值。
 
-```bash
-.venv/bin/python -B -m handeye validate --result calibration-data/sessions/s001/result.json --points calibration-data/sessions/s001/touch_points.csv
+```powershell
+.venv\Scripts\python.exe -B -m handeye validate --result calibration-data\sessions\s001\result.json --points calibration-data\sessions\s001\touch_points.csv
 ```
 
 输出 `scope=board_pose_check`。它比较保存的 **Y（板位姿）** 与实测触点，报告每点误差、RMS、板位姿差和触点拟合残差。**单凭这项通过，不能认定 X（手眼变换）正确。**
 
 **独立手眼链检查**：保持支架和板的位置不变，另外采集一个未用于拟合的 session（例如 `validation01`），使用同一相机配置及准确板定义，仍记录工具 0、工件坐标系 0 的法兰位姿。至少 3 个可用视图，旋转需覆盖两个不同的轴；建议多采几个分散姿态。运行：
 
-```bash
-.venv/bin/python -B -m handeye validate --result calibration-data/sessions/s001/result.json --points calibration-data/sessions/s001/touch_points.csv --session calibration-data/sessions/validation01 --output calibration-data/sessions/validation01/validation.json
+```powershell
+.venv\Scripts\python.exe -B -m handeye validate --result calibration-data\sessions\s001\result.json --points calibration-data\sessions\s001\touch_points.csv --session calibration-data\sessions\validation01 --output calibration-data\sessions\validation01\validation.json
 ```
 
 输出 `scope=handeye_chain_check`。每个新视图使用 `base_T_flange · 已有X · camera_T_board` 预测板角点，再与触点比较；不使用保存的 Y，也不重新拟合 X。总 RMS 或最差视图 RMS 超过 `--max-rms-mm`（默认 3 mm）时退出码为 2。
@@ -459,7 +469,7 @@ WARNING: the board covered only 40% of the image over all views; move it towards
 
 第一次在真机上标定时，按顺序逐项确认。每一项都针对一个仿真无法覆盖的环节。
 
-1. **环境**：在 Ubuntu 笔记本上跑一遍测试（[1.4](#14-软件环境)），全部通过。
+1. **环境**：在笔记本上跑一遍单元测试（[1.4](#14-软件环境)），67 个全部通过。
 2. **硬件**：支架刚性、线缆固定、控制器里设好负载；Box 开机预热 20–30 分钟。
 3. **标定板**：保持已确认的准确理论尺寸；板平整、固定在工作台上。
 4. **相机**：确认采集程序以 `camera_disable_self_calib = True`、`FLIP_MODE.OFF` 打开相机（见 [1.3](#13-安装与采集要点)）。在 Box 上运行 `tools/zed_camera_yaml.py --output camera.yaml`，与采集程序的校正后左目内参和配置核对（见 2.1）；不要直接比对 Explorer 的 raw 内参。确认存下的图像是**校正后的单张左目图**：不是左右拼接图，不是原始未校正图，PNG 格式，1920×1200，`FLIP_MODE.OFF`。

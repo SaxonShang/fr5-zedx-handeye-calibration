@@ -64,9 +64,9 @@ python -m handeye solve
 
 ## 5. 开发流程
 
-- 在仓库根目录运行所有命令。环境：`python -m venv .venv` 后安装 `requirements.txt`；测试过 Python 3.10 和 3.14（版本表见 README 1.4 节）。
-- **单元测试**：`python -B -m unittest discover -s tests`，67 个，约 1.5 分钟，必须全部通过（目前只在 Python 3.14 上验证过这 67 个）。
-- **仿真回归**：`python -B sim/synthetic.py suite`，约 2.5 分钟，13 个检查场景必须全部符合预期（否则退出码 1）。数值变化后，同步更新 README 第 3 节和 4.6 节的表格。
+- **默认平台是 Windows**：在仓库根目录用 PowerShell 或 cmd 运行所有命令，直接调用 `.venv\Scripts\python.exe`，不激活虚拟环境。环境：`py -m venv .venv` 后安装 `requirements.txt`（版本表见 README 1.4 节）。文档里的命令一律写 Windows 形式，Ubuntu 的换法只在 README 1.4 节说明一次。
+- **单元测试**：`.venv\Scripts\python.exe -B -m unittest discover -s tests`，67 个，约 1–1.5 分钟，必须全部通过（Windows 上的 Python 3.10 和 3.14 都验证过）。
+- **仿真回归**：`.venv\Scripts\python.exe -B sim\synthetic.py suite`，约 2.5 分钟，13 个检查场景必须全部符合预期（否则退出码 1）。数值变化后，同步更新 README 第 3 节和 4.6 节的表格。
 - **提交**：由用户手动提交。不要自行 commit、push 或改动暂存区。
 - **不要生成 `__pycache__`**：命令都带 `-B`；`sim/` 里也设置了 `sys.dont_write_bytecode`。
 - **本地规则**（`AGENTS.md`，不进 git）：不启用 trace 级日志或 trace 导出；避免持续、高频的磁盘写入。

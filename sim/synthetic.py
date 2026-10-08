@@ -30,6 +30,7 @@ import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 import yaml  # noqa: E402
 
+from handeye import python_command  # noqa: E402
 from handeye.board import board_point, read_board, tag_object_corners  # noqa: E402
 from handeye.dataset import write_poses  # noqa: E402
 from handeye.geometry import fr5_from_matrix, inverse, parameters_to_matrix, rotation_angle_degrees, \
@@ -444,7 +445,7 @@ def main():
             single_axis=args.single_axis, joint_offset_deg=args.joint_offset_deg, k_error=tuple(args.k_error),
             jpeg_quality=args.jpeg_quality, pose_typo=args.pose_typo, residual_k1=args.residual_k1,
             tcp_offset_mm=args.tcp_offset_mm, user_frame=args.user_frame)
-        print(f"Session: {session}\nNext: python -m handeye solve --session \"{session}\"")
+        print(f"Session: {session}\nNext: {python_command()} -m handeye solve --session \"{session}\"")
     elif args.command == "compare":
         print_comparison(compare_session(args.session))
     else:
