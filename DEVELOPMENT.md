@@ -40,7 +40,7 @@ python -m handeye solve
 - **坐标系命名**：`A_T_B` 把 B 中的点变换到 A。内部一律用米和弧度；FR5 的读数是毫米和度。结果格式为 `schema_version=2`，`frames` 声明实际含义；内部计算保留原变量名，序列化总提供 `pose_moving_T_left_camera` / `pose_reference_T_board`。只有声明为 flange/base 时才提供对应标准别名；TCP、工件坐标系的未知偏移不做自动转换。
 - **FR5 姿态**：`R = Rz(rz)·Ry(ry)·Rx(rx)`（手册写的是移动轴 ZYX）。位姿指**法兰**（工具坐标系 0）在**基坐标系**（工件坐标系 0）下的值。
 - **Kalibr 板**：AprilTag 36h11，`markerBorderBits=2`，码图旋转 180°，板尺寸按用户确认的准确值固定为 55 mm、间隙 16.5 mm。码图旋转意味着 OpenCV 的角点 0..3 依次对应 tag 的物理 BR、BL、TL、TR 角；原点在 tag 0 的左下角。这已用实物照片验证过，不要"修正"。
-- **图像**：ZED 校正后左目、`FLIP_MODE.OFF`、内参取校正后的 `left_cam`。未如实声明的翻转 180° 可能被手眼旋转吸收；不能靠残差确认方向。显式 ON/AUTO 元数据现在会在入口拒绝。
+- **图像**：ZED 校正后左目、`FLIP_MODE.OFF`、自标定关闭（导出、采集、实际使用三处都关）、内参取校正后的 `left_cam`。自标定会在每次启动时改变校正后左目的内参和朝向，所以 `compare` / `validate --session` 故意要求内参完全相同，不要放宽这个比较。未如实声明的翻转 180° 可能被手眼旋转吸收；不能靠残差确认方向。显式 ON/AUTO 元数据现在会在入口拒绝。
 - **旋转向量**：一律用 `geometry.rotation_vector`，不要用 `cv2.Rodrigues(矩阵)`。后者会把小于约 1e-5 rad 的旋转当成 0，曾导致逆解和残差看不见这么小的误差。
 - **图像读写**：一律用 `read_image` / `write_image`。仓库在中文路径下，`cv2.imread` / `cv2.imwrite` 读写不了。
 - **测试视图**：每 5 个可用视图取 1 个作为测试视图，只用于报告和质量门限，**绝不参与选方法**。候选资格和选型只看训练/CV；赢家测试失败就拒绝，不回退到测试表现更好的方法。
@@ -65,7 +65,7 @@ python -m handeye solve
 ## 5. 开发流程
 
 - 在仓库根目录运行所有命令。环境：`python -m venv .venv` 后安装 `requirements.txt`；测试过 Python 3.10 和 3.14（版本表见 README 1.4 节）。
-- **单元测试**：`python -B -m unittest discover -s tests`，本轮完整回归数量见下方记录，必须全部通过。
+- **单元测试**：`python -B -m unittest discover -s tests`，67 个，约 1.5 分钟，必须全部通过（目前只在 Python 3.14 上验证过这 67 个）。
 - **仿真回归**：`python -B sim/synthetic.py suite`，约 2.5 分钟，13 个检查场景必须全部符合预期（否则退出码 1）。数值变化后，同步更新 README 第 3 节和 4.6 节的表格。
 - **提交**：由用户手动提交。不要自行 commit、push 或改动暂存区。
 - **不要生成 `__pycache__`**：命令都带 `-B`；`sim/` 里也设置了 `sys.dont_write_bytecode`。
@@ -75,12 +75,14 @@ python -m handeye solve
 ## 6. 已知局限与待办
 
 1. **真机未验证**：真实图像的检测质量、真实内参精度、FR5 的绝对精度、门限的合理取值，都要按 README 第 5 节的试标清单去确认；Ubuntu 上也还没跑过测试。
-2. **`tools/zed_camera_yaml.py` 未在硬件上运行过**：目前为假 SDK 测试。脚本可单文件复制到 Box，依赖 PyYAML/pyzed，必须用 `--output` 原子写入 YAML。单独打开的自标定实例不能认证另一次采集的 K。
+2. **`tools/zed_camera_yaml.py` 未在硬件上运行过**：目前为假 SDK 测试。脚本可单文件复制到 Box，依赖 PyYAML/pyzed，必须用 `--output` 原子写入 YAML。项目要求全程关闭自标定（README 1.3）；`--self-calib` 选项只为兼容保留，打开后单独导出的 K 不能代表另一次启动采集的图像。
 3. **未声明的图像翻转无法可靠发现**：需要设置 `FLIP_MODE.OFF`，并核对实际图像方向；显式不兼容声明会被拒绝。
 4. **仿真的局限**：渲染与检测共用同一板定义；内参为名义值；FR5 只用名义运动学，未检查碰撞；有损视频只用 JPEG 近似。
 5. **机械臂位姿视为准确**：没有建立机械臂误差模型，这方面的误差只通过 jackknife、测试视图和 `compare` 间接反映。
 6. **覆盖度警告的阈值**（图像覆盖 50%）在仿真里总会触发，需要根据真实数据调整。
 7. **可以考虑的改进**（尚未做）：把关节零位误差纳入联合优化；用真实图像校准诊断阈值；如果 FR5 的绝对精度成为瓶颈，考虑做运动学标定。
+8. **`validate --session` 限制过严**：标定结果被标记为工件坐标系（`frames.pose_reference = reported_work_frame`）时，`validate` 一律拒绝。但 `--session` 模式不使用旧的 Y，只要新 session 的位姿在基坐标系下，检验仍然成立，可以放宽为只对不加 `--session` 的板位姿检查要求基坐标系。放宽时还要核对新 session 自身的位姿坐标系（有关节角时用 `row_consistency`）。另外，工件坐标系的判断依赖名义 DH，阈值 5 mm / 0.5°，真机上的误报率还不清楚；等有真机数据后再改。
+9. **`result.json` 记录的是绝对路径**：`compare` 和 `validate --session` 要按这个路径读取原始图像来检查独立性。数据换了位置（例如从 Windows 搬到 Ubuntu）后要重新 `solve`；手眼矩阵本身不受影响。
 
 
 ## 7. 2026-09-24 审查修复

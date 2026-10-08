@@ -123,7 +123,7 @@ FR5 末端法兰
 下面几项决定精度，其中标 ⚠️ 的算法无法事后发现或纠正。
 
 - ⚠️ **图像不能被翻转**：ZED 以 `FLIP_MODE.OFF` 打开。SDK 默认的 `AUTO` 在相机倒置时会把图像转 180°，标定结果也随之转 180°，任何检查都发现不了。
-- **自标定**：开或关都可以，但采集和实际使用必须一致。
+- ⚠️ **自标定必须关闭**：导出内参的工具、在 Box 上保存图像的采集程序、实际使用的程序，三处都以 `camera_disable_self_calib = True` 打开相机（导出工具默认已关闭，另外两处要你们自己设置）。自标定每次启动都会重新修正左右目之间的外参，校正后的内参会变，校正后左目的坐标轴相对相机外壳也会轻微转动，所以手眼结果只对标定时的那次启动成立。
 - **预热**：Box 紧挨相机、会发热，开机后等 20–30 分钟再采集；实际使用时也保持同样的热状态。
 - ⚠️ **支架刚性**：相机尽量靠近法兰、直接固定，Box 的 600 g 不要经过相机的安装件传递。支架随姿态变化的变形无法被标定消除。
 - **线缆**：电源线在支架上固定好，给 J4–J6 留足旋转余量，不能拉扯末端。
@@ -148,7 +148,7 @@ python3 -m venv .venv
 
 Windows 用 `python -m venv .venv` 和 `.venv\Scripts\python.exe -m pip install -r requirements.txt`。依赖为 numpy、OpenCV contrib 4.x、SciPy、PyYAML。OpenCV 限定 4.x，因为 [5.0.0.93 的 Python 包缺失 `calibrateHandEye`](https://github.com/opencv/opencv/issues/29565)。仓库放在中文路径下也能正常读写图像。
 
-此前测试过的依赖组合（Windows；本轮测试数量见开发说明）：
+测试过的依赖组合（都在 Windows 上）。当前的 67 个单元测试在 3.14.7 这一行的环境中全部通过；3.10.21 这一行是在上一版（35 个测试）时验证的：
 
 | Python | opencv-contrib-python | numpy | scipy | PyYAML |
 |---|---|---|---|---|
@@ -190,7 +190,9 @@ distortion: [0.0, 0.0, 0.0, 0.0, 0.0]   # 校正图为 0
 
 数值来自 SDK 的 `calibration_parameters.left_cam`。`tools/zed_camera_yaml.py --output camera.yaml` 直接写入文件，避免 SDK 的终端日志混入 YAML，同时记录实际分辨率、帧率、序列号和 SDK 版本。**不要用 `SN*.conf` 或 Explorer 的 raw 内参代替**，它们对应未校正图像。
 
-导出工具会单独打开相机，默认关闭启动自标定。图像采集与实际使用必须采用同一相机、SDK、分辨率、翻转和自标定设置；如果开启启动自标定，必须从**保存图像的同一个相机实例**导出 K，不能拿另一次启动生成的 YAML 为已有图像作保证。仅有元数据相同也不能证明 K 与图像来自同次标定。
+导出工具会单独打开一次相机，关闭自标定，并核对 SDK 确实按此设置打开。只有采集程序和实际使用的程序也关闭自标定（见 [1.3](#13-安装与采集要点)），并且使用同一台相机、同一 SDK 版本、同一分辨率和 `FLIP_MODE.OFF`，每次启动的校正参数才相同，单独导出的内参才对应已保存的图像。`camera.yaml` 里的元数据只是记录，不能代替去核对采集程序的实际设置。
+
+`compare` 和 `validate --session` 要求两个 session 的内参完全相同，内参稍有差别就报错，而不是放宽比较：内参不同说明两次启动的校正参数不同，手眼结果本身也可能变了。自标定全程关闭时，这个条件自然满足。
 
 显式 `image_flip: ON/AUTO`、非 `LEFT` 或未校正图像声明会被拒绝。旧文件缺少这些字段仍可读取，缺失不代表相机设置已核验。
 
@@ -251,13 +253,14 @@ X = flange_T_left_camera（要求的手眼结果）   Y = base_T_board（标定�
 | `check-poses --poses CSV` | 用 FR5 运动学核对位姿表：欧拉角约定是否为 `Rz·Ry·Rx`、有没有与关节角不一致的行、读数时是否激活了 TCP 或工件坐标系 |
 | `solve --session DIR [选项]` | 标定，写出 `result.json` |
 | `compare --results A.json B.json [...]` | 比较同一安装状态下多次独立标定的结果 |
-| `validate --result JSON --points CSV [--session NEW_DIR]` | 用尖端点做独立验证 |
+| `validate --result JSON --points CSV` | 板位姿检查：用尖端点核对结果里的板位姿 Y；**不能**证明手眼结果 X 正确 |
+| `validate --result JSON --points CSV --session NEW_DIR` | 独立手眼检查：用一个未参与标定的新 session 和尖端点检验 X（见 [4.5](#45-重复性与独立验证)） |
 
 `solve` 的常用选项：
 - 核对与判定：`--expected-translation-mm X Y Z`、`--expected-tolerance-mm`（默认 10），以及 [4.3](#43-质量门限) 里的各项门限。
 - 检测与求解：`--target`、`--min-tags`（4）、`--max-pnp-rmse`（2 px）、`--no-refine`。
 - 诊断：`--bootstrap`（jackknife 子集数，默认 30，0 为关闭）、`--max-scale-error`（0.003）、`--max-focal-error`（0.003）、`--max-principal-point-px`（3）、`--max-distortion-px`（1）。
-- `--allow-tcp-offset`：确实要标定相机相对某个 TCP 的位姿时使用，这时位姿读成 TCP 只警告、不拒绝。
+- `--allow-tcp-offset`：确实要标定相机相对某个 TCP 的位姿时使用，这时位姿读成 TCP 只警告、不拒绝。结果只输出 `pose_moving_T_left_camera`，没有 `flange_T_left_camera`，也不能用于 `compare`、`validate` 和支架 CAD 核对（见 [4.4](#44-诊断与处理)）。标定相对法兰的位姿时不需要它。
 
 运行 `python -m handeye solve --help` 查看全部选项。
 
@@ -459,7 +462,7 @@ WARNING: the board covered only 40% of the image over all views; move it towards
 1. **环境**：在 Ubuntu 笔记本上跑一遍测试（[1.4](#14-软件环境)），全部通过。
 2. **硬件**：支架刚性、线缆固定、控制器里设好负载；Box 开机预热 20–30 分钟。
 3. **标定板**：保持已确认的准确理论尺寸；板平整、固定在工作台上。
-4. **相机**：在 Box 上运行 `tools/zed_camera_yaml.py --output camera.yaml`，与采集程序的校正后左目内参和配置核对（见 2.1）；不要直接比对 Explorer 的 raw 内参。确认存下的图像是**校正后的单张左目图**：不是左右拼接图，不是原始未校正图，PNG 格式，1920×1200，`FLIP_MODE.OFF`。
+4. **相机**：确认采集程序以 `camera_disable_self_calib = True`、`FLIP_MODE.OFF` 打开相机（见 [1.3](#13-安装与采集要点)）。在 Box 上运行 `tools/zed_camera_yaml.py --output camera.yaml`，与采集程序的校正后左目内参和配置核对（见 2.1）；不要直接比对 Explorer 的 raw 内参。确认存下的图像是**校正后的单张左目图**：不是左右拼接图，不是原始未校正图，PNG 格式，1920×1200，`FLIP_MODE.OFF`。
 5. **单张图**：`detect --overlay`，应检出 36 个 tag，蓝色 `0` 在 tag 的物理右下角。
 6. **位姿**：确认 WebApp 当前的工具坐标系和工件坐标系都是 0；记录 8 个以上分散的姿态（附关节角），运行 `check-poses`，应判 `pass`，拟合出的偏移应接近 0。
 7. **标定**：采集 20–30 个姿态，带上支架 CAD 平移运行 `solve`。PnP 误差预计在 0.5 px 以下，然后逐条看警告。
