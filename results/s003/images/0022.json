@@ -1,0 +1,23 @@
+{
+  "image": "0022.png",
+  "zed_timestamp_ms": 1791515100903,
+  "saved_utc": "2026-10-09T03:05:01.726456+00:00",
+  "image_width": 1920,
+  "image_height": 1080,
+  "fx": 734.4576416015625,
+  "fy": 734.4576416015625,
+  "cx": 987.4609375,
+  "cy": 556.6715087890625,
+  "camera_serial": 49953548,
+  "zed_sdk": "5.1.2",
+  "resolution": "HD1080",
+  "camera_fps": 15,
+  "image_view": "LEFT",
+  "rectified": true,
+  "image_flip": "OFF",
+  "self_calibration": "disabled",
+  "exposure_us": 10000,
+  "analog_gain_mdb": 1000,
+  "digital_gain": 1,
+  "mean_gray": 49.34308609825103
+}

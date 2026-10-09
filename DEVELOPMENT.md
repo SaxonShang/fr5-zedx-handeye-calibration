@@ -6,9 +6,9 @@
 
 - 本仓库**只做手眼标定算法**：输入是 session 文件夹（`camera.yaml`、`poses.csv`、`images/`、`target.yaml`），输出是 `result.json`。
 - **数据采集不在本仓库**。硬件是：ZED Box Mini 和 ZED X 装在 FR5 末端，Box 接显示器保存图像；笔记本用网线连接 FR5，通过 WebApp 移动机械臂、抄录位姿和关节角。
-- 核心代码**不依赖 ZED 或 FAIRINO 的 SDK**，不要把采集或 SDK 调用加回 `handeye/`。唯一的例外是 `tools/zed_camera_yaml.py`，在 Box 上运行，用来导出内参。
+- 核心代码**不依赖 ZED 或 FAIRINO 的 SDK**，不要把采集或 SDK 调用加回 `handeye/`。例外只有 `tools/` 下的两个单文件工具，都在 Box 上运行：`zed_camera_yaml.py` 导出内参，`zed_snapshot.py` 拍一张标定图（只在调用时写一张图和一个 JSON，不连续录制）。
 - 早先基于 SDK 的自动采集代码：较早的版本在 git 历史里（提交 `4481b40` 的 `handeye.py`）；后来改进的 `acquisition.py`（按 `frame_cnt` 检查数据新鲜度）和 `box_sender.py` 从未提交，只保存在本地的 `calibration-data/archive/`。
-- 设备状态：截至 2026-09-24 **还没有用真机数据跑过**，全部验证都来自仿真和单元测试。
+- 设备状态：2026-10-09 完成第一次真机标定，数据和结果在 `results/s003/`（25 张，结果为 accepted，实际精度约 1–3 mm / 0.1–0.3°）。完整流程和遇到的问题见 README 第 6 节。
 
 ## 2. 代码结构与数据流
 
@@ -74,8 +74,8 @@ python -m handeye solve
 
 ## 6. 已知局限与待办
 
-1. **真机未验证**：真实图像的检测质量、真实内参精度、FR5 的绝对精度、门限的合理取值，都要按 README 第 5 节的试标清单去确认；Ubuntu 上也还没跑过测试。
-2. **`tools/zed_camera_yaml.py` 未在硬件上运行过**：目前为假 SDK 测试。脚本可单文件复制到 Box，依赖 PyYAML/pyzed，必须用 `--output` 原子写入 YAML。项目要求全程关闭自标定（README 1.3）；`--self-calib` 选项只为兼容保留，打开后单独导出的 K 不能代表另一次启动采集的图像。
+1. **真机精度受机械臂限制**：s003 中检测质量（PnP 0.09–0.15 px）和内参（独立估计只差 0.2%）都已核实，但不同求解方法之间相差约 5.8 mm，板尺度诊断偏离 −0.5%。已经排除了内参、相机移动、关节零位、J2/J3 重力偏转、底座倾斜和支架重力变形这些原因，剩下最可能是 FR5 的绝对定位误差。还没做独立验证（尖端点或任务测试）。门限目前仍是默认值，s003 的测试误差 1.36 px / 1.25 mm 可以作为调整门限的参考。Ubuntu 上还没跑过测试。
+2. **Box 工具已在硬件上验证**：`zed_camera_yaml.py` 和 `zed_snapshot.py` 在 L4T R36.4.4、ZED SDK 5.1.2、Python 3.10 上运行正常。`zed_snapshot.py` 的默认相机设置必须和实际采集程序保持一致（HD1080、15 fps、10 ms 曝光等）；采集程序的设置变了，这里也要同步改。`zed_camera_yaml.py` 必须用 `--output` 原子写入 YAML。项目要求全程关闭自标定（README 1.3）；`--self-calib` 选项只为兼容保留，打开后单独导出的 K 不能代表另一次启动采集的图像。
 3. **未声明的图像翻转无法可靠发现**：需要设置 `FLIP_MODE.OFF`，并核对实际图像方向；显式不兼容声明会被拒绝。
 4. **仿真的局限**：渲染与检测共用同一板定义；内参为名义值；FR5 只用名义运动学，未检查碰撞；有损视频只用 JPEG 近似。
 5. **机械臂位姿视为准确**：没有建立机械臂误差模型，这方面的误差只通过 jackknife、测试视图和 `compare` 间接反映。
